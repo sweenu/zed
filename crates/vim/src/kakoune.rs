@@ -79,6 +79,8 @@ actions!(
         /// Disables hooks (automatic behaviors like autoindent and format on
         /// save) for the next command.
         KakouneDisableHooks,
+        /// Selects the number under the cursor during an object selection.
+        KakouneNumberObject,
         /// Saves the active item without formatting it.
         KakouneSaveWithoutFormat,
     ]
@@ -396,6 +398,19 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
             vim.kakoune_combine_selections(action.kind, action.save, window, cx);
         },
     );
+    Vim::action(editor, cx, |vim, _: &KakouneNumberObject, window, cx| {
+        let Some(Operator::KakouneObject { around, target }) = vim.active_operator() else {
+            vim.clear_operator(window, cx);
+            return;
+        };
+        vim.clear_operator(window, cx);
+        vim.kakoune_scanned_object(
+            target,
+            move |map, cursor| number_range(map, cursor, around),
+            window,
+            cx,
+        );
+    });
     Vim::action(editor, cx, |vim, _: &KakouneDisableHooks, _, cx| {
         vim.kakoune_hooks_disabled = Some(KakouneHooksPhase::Armed);
         vim.status_label = Some("no hooks".into());
@@ -494,6 +509,66 @@ fn matching_range(
         }
         None
     }
+}
+
+fn char_at(map: &DisplaySnapshot, offset: MultiBufferOffset) -> Option<char> {
+    movement::chars_after(map, offset).next().map(|(c, _)| c)
+}
+
+fn previous_char_start(
+    map: &DisplaySnapshot,
+    offset: MultiBufferOffset,
+) -> Option<MultiBufferOffset> {
+    movement::chars_before(map, offset)
+        .next()
+        .map(|(_, range)| range.start)
+}
+
+fn next_char_start(map: &DisplaySnapshot, offset: MultiBufferOffset) -> Option<MultiBufferOffset> {
+    movement::chars_after(map, offset)
+        .next()
+        .map(|(_, range)| range.end)
+}
+
+/// Kakoune's number object: digits when inner; `around` also takes `.` and a
+/// leading `-`. Returns the range covering the number under the cursor.
+fn number_range(
+    map: &DisplaySnapshot,
+    cursor: MultiBufferOffset,
+    around: bool,
+) -> Option<Range<MultiBufferOffset>> {
+    let is_number = |c: char| c.is_ascii_digit() || (around && c == '.');
+
+    let current = char_at(map, cursor)?;
+    if !is_number(current) && current != '-' {
+        return None;
+    }
+
+    let mut start = cursor;
+    while let Some(previous) = previous_char_start(map, start)
+        && let Some(c) = char_at(map, previous)
+        && is_number(c)
+    {
+        start = previous;
+    }
+    // A leading minus is part of the number for both inner and whole.
+    if let Some(previous) = previous_char_start(map, start)
+        && char_at(map, previous) == Some('-')
+    {
+        start = previous;
+    }
+
+    let mut end = cursor;
+    if char_at(map, end) == Some('-') {
+        end = next_char_start(map, end)?;
+    }
+    while let Some(c) = char_at(map, end)
+        && is_number(c)
+    {
+        end = next_char_start(map, end)?;
+    }
+
+    (start < end).then_some(start..end)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1700,6 +1775,58 @@ impl Vim {
         });
     }
 
+    /// Applies an object selection whose range comes from a character scan
+    /// around the cursor (the number and whitespace objects), honoring the
+    /// pending object target like `normal_object` does for vim objects.
+    fn kakoune_scanned_object(
+        &mut self,
+        target: KakouneObjectTarget,
+        range_for: impl Fn(&DisplaySnapshot, MultiBufferOffset) -> Option<Range<MultiBufferOffset>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_recording(cx);
+        self.update_editor(cx, |_, editor, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.move_with(&mut |map, selection| {
+                    let cursor = if selection.reversed || selection.is_empty() {
+                        selection.head()
+                    } else {
+                        movement::left(map, selection.head())
+                    };
+                    let Some(range) = range_for(map, cursor.to_offset(map, Bias::Left)) else {
+                        return;
+                    };
+                    let start = range.start.to_display_point(map);
+                    let end = range.end.to_display_point(map);
+                    match target {
+                        KakouneObjectTarget::Whole => {
+                            selection.set_head_tail(end, start, SelectionGoal::None);
+                        }
+                        KakouneObjectTarget::ToStart { extend } => {
+                            if extend {
+                                selection.set_head(start, SelectionGoal::None);
+                            } else {
+                                selection.set_head_tail(
+                                    start,
+                                    movement::right(map, cursor),
+                                    SelectionGoal::None,
+                                );
+                            }
+                        }
+                        KakouneObjectTarget::ToEnd { extend } => {
+                            if extend {
+                                selection.set_head(end, SelectionGoal::None);
+                            } else {
+                                selection.set_head_tail(end, cursor, SelectionGoal::None);
+                            }
+                        }
+                    }
+                });
+            });
+        });
+    }
+
     /// Kakoune's `alt-o`/`alt-O`: add empty lines around the cursor's line
     /// while staying in normal mode and keeping the selections in place.
     fn kakoune_add_line(&mut self, above: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -2742,6 +2869,37 @@ mod test {
             thˇree"},
             Mode::KakouneNormal,
         );
+    }
+
+    #[gpui::test]
+    async fn test_number_object(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // Inner selects the digit run.
+        cx.set_state("price 1ˇ23 end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-i n");
+        cx.assert_state("price «123ˇ» end", Mode::KakouneNormal);
+
+        // Around also takes the dot and a leading minus.
+        cx.set_state("pi -3.1ˇ4 x", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-a n");
+        cx.assert_state("pi «-3.14ˇ» x", Mode::KakouneNormal);
+
+        // Inner stops at the dot.
+        cx.set_state("pi 3.1ˇ4 x", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-i n");
+        cx.assert_state("pi 3.«14ˇ» x", Mode::KakouneNormal);
+
+        // `]` selects from the cursor to the number's end.
+        cx.set_state("a 12ˇ345 b", Mode::KakouneNormal);
+        cx.simulate_keystrokes("] n");
+        cx.assert_state("a 12«345ˇ» b", Mode::KakouneNormal);
+
+        // Not on a number: no-op.
+        cx.set_state("ˇword 42", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-i n");
+        cx.assert_state("ˇword 42", Mode::KakouneNormal);
     }
 
     #[gpui::test]
