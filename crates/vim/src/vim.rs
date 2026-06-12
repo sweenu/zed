@@ -9,6 +9,7 @@ mod digraph;
 mod helix;
 mod indent;
 mod insert;
+mod kakoune;
 mod mode_indicator;
 mod motion;
 mod normal;
@@ -53,7 +54,7 @@ use std::{mem, ops::Range, sync::Arc};
 use surrounds::SurroundsType;
 use theme_settings::ThemeSettings;
 use ui::{IntoElement, SharedString, px};
-use vim_mode_setting::HelixModeSetting;
+use vim_mode_setting::{HelixModeSetting, KakouneModeSetting};
 use vim_mode_setting::VimModeSetting;
 use workspace::{self, Pane, Workspace};
 
@@ -180,6 +181,8 @@ actions!(
         SwitchToVisualBlockMode,
         /// Switches to Helix-style normal mode.
         SwitchToHelixNormalMode,
+        /// Switches to Kakoune-style normal mode.
+        SwitchToKakouneNormalMode,
         /// Clears any pending operators.
         ClearOperators,
         /// Clears the exchange register.
@@ -279,6 +282,8 @@ actions!(
         ToggleVimMode,
         /// Toggles Helix mode on or off.
         ToggleHelixMode,
+        /// Toggles Kakoune mode on or off.
+        ToggleKakouneMode,
     ]
 );
 
@@ -297,6 +302,9 @@ pub fn init(cx: &mut App) {
                 if let Some(helix_mode) = &mut setting.helix_mode {
                     *helix_mode = false;
                 }
+                if let Some(kakoune_mode) = &mut setting.kakoune_mode {
+                    *kakoune_mode = false;
+                }
             })
         });
 
@@ -307,6 +315,23 @@ pub fn init(cx: &mut App) {
                 setting.helix_mode = Some(!currently_enabled);
                 if let Some(vim_mode) = &mut setting.vim_mode {
                     *vim_mode = false;
+                }
+                if let Some(kakoune_mode) = &mut setting.kakoune_mode {
+                    *kakoune_mode = false;
+                }
+            })
+        });
+
+        workspace.register_action(|workspace, _: &ToggleKakouneMode, _, cx| {
+            let fs = workspace.app_state().fs.clone();
+            let currently_enabled = KakouneModeSetting::get_global(cx).0;
+            update_settings_file(fs, cx, move |setting, _| {
+                setting.kakoune_mode = Some(!currently_enabled);
+                if let Some(vim_mode) = &mut setting.vim_mode {
+                    *vim_mode = false;
+                }
+                if let Some(helix_mode) = &mut setting.helix_mode {
+                    *helix_mode = false;
                 }
             })
         });
@@ -563,15 +588,23 @@ impl Vim {
         let editor = cx.entity();
 
         let initial_vim_mode = VimSettings::get_global(cx).default_mode;
-        let (mode, last_mode) = if HelixModeSetting::get_global(cx).0 {
-            let initial_helix_mode = match initial_vim_mode {
-                Mode::Normal => Mode::HelixNormal,
+        // Kakoune wins if both kakoune_mode and helix_mode are enabled.
+        let selection_first_mode = if KakouneModeSetting::get_global(cx).0 {
+            Some(Mode::KakouneNormal)
+        } else if HelixModeSetting::get_global(cx).0 {
+            Some(Mode::HelixNormal)
+        } else {
+            None
+        };
+        let (mode, last_mode) = if let Some(normal_mode) = selection_first_mode {
+            let initial_mode = match initial_vim_mode {
+                Mode::Normal => normal_mode,
                 Mode::Insert => Mode::Insert,
                 // Otherwise, we panic with a note that we should never get there due to the
                 // possible values of VimSettings::get_global(cx).default_mode being either Mode::Normal or Mode::Insert.
                 _ => unreachable!("Invalid default mode"),
             };
-            (initial_helix_mode, Mode::HelixNormal)
+            (initial_mode, normal_mode)
         } else {
             (initial_vim_mode, Mode::Normal)
         };
@@ -619,10 +652,12 @@ impl Vim {
 
         let mut was_enabled = Vim::enabled(cx);
         let mut was_helix_enabled = HelixModeSetting::get_global(cx).0;
+        let mut was_kakoune_enabled = KakouneModeSetting::get_global(cx).0;
         let mut was_toggle = VimSettings::get_global(cx).toggle_relative_line_numbers;
         cx.observe_global_in::<SettingsStore>(window, move |editor, window, cx| {
             let enabled = Vim::enabled(cx);
             let helix_enabled = HelixModeSetting::get_global(cx).0;
+            let kakoune_enabled = KakouneModeSetting::get_global(cx).0;
             let toggle = VimSettings::get_global(cx).toggle_relative_line_numbers;
             if enabled && was_enabled && (toggle != was_toggle) {
                 if toggle {
@@ -635,10 +670,13 @@ impl Vim {
                 }
             }
             let helix_changed = was_helix_enabled != helix_enabled;
+            let kakoune_changed = was_kakoune_enabled != kakoune_enabled;
             was_toggle = toggle;
             was_helix_enabled = helix_enabled;
+            was_kakoune_enabled = kakoune_enabled;
 
-            let state_changed = (was_enabled != enabled) || (was_enabled && helix_changed);
+            let state_changed =
+                (was_enabled != enabled) || (was_enabled && (helix_changed || kakoune_changed));
             if !state_changed {
                 return;
             }
@@ -706,6 +744,14 @@ impl Vim {
                 cx,
                 |vim, _: &SwitchToHelixNormalMode, window, cx| {
                     vim.switch_mode(Mode::HelixNormal, true, window, cx)
+                },
+            );
+
+            Vim::action(
+                editor,
+                cx,
+                |vim, _: &SwitchToKakouneNormalMode, window, cx| {
+                    vim.switch_mode(Mode::KakouneNormal, true, window, cx)
                 },
             );
             Vim::action(editor, cx, |_, _: &PushForcedMotion, _, cx| {
@@ -985,6 +1031,7 @@ impl Vim {
             normal::register(editor, cx);
             insert::register(editor, cx);
             helix::register(editor, cx);
+            kakoune::register(editor, cx);
             motion::register(editor, cx);
             command::register(editor, cx);
             replace::register(editor, cx);
@@ -1065,7 +1112,9 @@ impl Vim {
     }
 
     pub fn enabled(cx: &mut App) -> bool {
-        VimModeSetting::get_global(cx).0 || HelixModeSetting::get_global(cx).0
+        VimModeSetting::get_global(cx).0
+            || HelixModeSetting::get_global(cx).0
+            || KakouneModeSetting::get_global(cx).0
     }
 
     /// Called whenever an keystroke is typed so vim can observe all actions
@@ -1231,7 +1280,16 @@ impl Vim {
                 editor.set_relative_line_number(Some(is_relative), cx)
             });
         }
-        if HelixModeSetting::get_global(cx).0 {
+        // Kakoune wins if both kakoune_mode and helix_mode are enabled. Kakoune
+        // has no select mode, so visual modes also coerce to its normal mode.
+        if KakouneModeSetting::get_global(cx).0 {
+            if matches!(
+                self.mode,
+                Mode::Normal | Mode::HelixNormal | Mode::Visual | Mode::HelixSelect
+            ) {
+                self.mode = Mode::KakouneNormal
+            }
+        } else if HelixModeSetting::get_global(cx).0 {
             if self.mode == Mode::Normal {
                 self.mode = Mode::HelixNormal
             } else if self.mode == Mode::Visual {
@@ -1382,7 +1440,7 @@ impl Vim {
                     cursor_shape.normal
                 }
             }
-            Mode::HelixNormal => cursor_shape.normal,
+            Mode::HelixNormal | Mode::KakouneNormal => cursor_shape.normal,
             Mode::Replace => cursor_shape.replace,
             Mode::Visual | Mode::VisualLine | Mode::VisualBlock | Mode::HelixSelect => {
                 cursor_shape.visual
@@ -1417,6 +1475,7 @@ impl Vim {
             }
             Mode::Normal
             | Mode::HelixNormal
+            | Mode::KakouneNormal
             | Mode::Replace
             | Mode::Visual
             | Mode::VisualLine
@@ -1437,7 +1496,8 @@ impl Vim {
             | Mode::VisualBlock
             | Mode::Replace
             | Mode::HelixNormal
-            | Mode::HelixSelect => false,
+            | Mode::HelixSelect
+            | Mode::KakouneNormal => false,
             Mode::Normal => true,
         }
     }
@@ -1450,6 +1510,7 @@ impl Vim {
             Mode::Replace => "replace",
             Mode::HelixNormal => "helix_normal",
             Mode::HelixSelect => "helix_select",
+            Mode::KakouneNormal => "kakoune_normal",
         }
         .to_string();
 
@@ -1480,6 +1541,7 @@ impl Vim {
             || mode == "operator"
             || mode == "helix_normal"
             || mode == "helix_select"
+            || mode == "kakoune_normal"
         {
             context.add("VimControl");
         }
@@ -1949,7 +2011,7 @@ impl Vim {
                     })
                 });
             }
-            Mode::Insert | Mode::Replace | Mode::HelixNormal => {}
+            Mode::Insert | Mode::Replace | Mode::HelixNormal | Mode::KakouneNormal => {}
         }
     }
 
@@ -2229,7 +2291,9 @@ impl Vim {
         VimEditorSettingsState {
             cursor_shape: self.cursor_shape(cx),
             clip_at_line_ends: self.clip_at_line_ends(),
-            collapse_matches: !HelixModeSetting::get_global(cx).0 && !self.search.cmd_f_search,
+            collapse_matches: !HelixModeSetting::get_global(cx).0
+                && !KakouneModeSetting::get_global(cx).0
+                && !self.search.cmd_f_search,
             input_enabled: self.editor_input_enabled(),
             expects_character_input: self.expects_character_input(),
             autoindent: self.should_autoindent(),
