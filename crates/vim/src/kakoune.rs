@@ -15,7 +15,12 @@ use serde::Deserialize;
 use text::{Bias, SelectionGoal};
 use workspace::searchable::Direction;
 
-use crate::{Vim, motion::Motion};
+use crate::{
+    Vim,
+    motion::Motion,
+    object::Object,
+    state::{KakouneObjectTarget, Operator},
+};
 
 actions!(
     vim,
@@ -52,6 +57,28 @@ pub struct KakouneMotion {
     /// Extend the current selection instead of replacing it.
     #[serde(default)]
     extend: bool,
+}
+
+/// Starts an object selection: without `to`, the whole surrounding object is
+/// selected; with `to`, the selection goes from the cursor to the object's
+/// start or end (optionally extending the current selection).
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
+#[action(namespace = vim)]
+#[serde(deny_unknown_fields)]
+pub struct PushKakouneObject {
+    #[serde(default)]
+    around: bool,
+    #[serde(default)]
+    to: Option<ObjectBound>,
+    #[serde(default)]
+    extend: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ObjectBound {
+    Start,
+    End,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq)]
@@ -155,6 +182,25 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     });
     Vim::action(editor, cx, |vim, _: &KakouneTrimToLines, window, cx| {
         vim.kakoune_trim_to_lines(window, cx);
+    });
+    Vim::action(editor, cx, |vim, action: &PushKakouneObject, window, cx| {
+        let target = match action.to {
+            None => KakouneObjectTarget::Whole,
+            Some(ObjectBound::Start) => KakouneObjectTarget::ToStart {
+                extend: action.extend,
+            },
+            Some(ObjectBound::End) => KakouneObjectTarget::ToEnd {
+                extend: action.extend,
+            },
+        };
+        vim.push_operator(
+            Operator::KakouneObject {
+                around: action.around,
+                target,
+            },
+            window,
+            cx,
+        );
     });
     Vim::action(editor, cx, |vim, _: &KakouneAddLineBelow, window, cx| {
         vim.kakoune_add_line(false, window, cx);
@@ -537,6 +583,48 @@ impl Vim {
                         selection.collapse_to(target, SelectionGoal::None);
                     }
                 })
+            });
+        });
+    }
+
+    /// Kakoune's `[`/`]`/`{`/`}`: select (or extend) from the cursor to the
+    /// surrounding object's start or end.
+    pub(crate) fn kakoune_select_object_bound(
+        &mut self,
+        object: Object,
+        around: bool,
+        to_end: bool,
+        extend: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_recording(cx);
+        self.update_editor(cx, |_, editor, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.move_with(&mut |map, selection| {
+                    let Ok(Some(range)) = object.helix_range(map, selection.clone(), around) else {
+                        return;
+                    };
+                    let cursor = if selection.reversed || selection.is_empty() {
+                        selection.head()
+                    } else {
+                        movement::left(map, selection.head())
+                    };
+                    if extend {
+                        let target = if to_end { range.end } else { range.start };
+                        selection.set_head(target, SelectionGoal::None);
+                    } else if to_end {
+                        selection.set_head_tail(range.end, cursor, SelectionGoal::None);
+                    } else {
+                        // The cursor's character stays selected, so the anchor
+                        // sits one character to its right.
+                        selection.set_head_tail(
+                            range.start,
+                            movement::right(map, cursor),
+                            SelectionGoal::None,
+                        );
+                    }
+                });
             });
         });
     }
@@ -1024,6 +1112,40 @@ mod test {
             tˇwo"},
             Mode::KakouneNormal,
         );
+    }
+
+    #[gpui::test]
+    async fn test_object_selection(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `alt-i` selects the inner object, `alt-a` the whole object.
+        cx.set_state("foo(bˇar)baz", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-i b");
+        cx.assert_state("foo(«barˇ»)baz", Mode::KakouneNormal);
+
+        cx.set_state("foo(bˇar)baz", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-a b");
+        cx.assert_state("foo«(bar)ˇ»baz", Mode::KakouneNormal);
+
+        cx.set_state("say 'hˇello' now", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-i q");
+        cx.assert_state("say '«helloˇ»' now", Mode::KakouneNormal);
+
+        // `[`/`]` select from the cursor to the object's start/end.
+        cx.set_state("foo(bar bˇaz qux)end", Mode::KakouneNormal);
+        // The cursor's character stays selected.
+        cx.simulate_keystrokes("[ b");
+        cx.assert_state("foo«ˇ(bar ba»z qux)end", Mode::KakouneNormal);
+
+        cx.set_state("foo(bar bˇaz qux)end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("] b");
+        cx.assert_state("foo(bar b«az qux)ˇ»end", Mode::KakouneNormal);
+
+        // `{`/`}` extend the selection to the object's start/end.
+        cx.set_state("foo(bar «bazˇ» qux)end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("} b");
+        cx.assert_state("foo(bar «baz qux)ˇ»end", Mode::KakouneNormal);
     }
 
     #[gpui::test]
