@@ -19,11 +19,13 @@ use settings::Settings;
 use text::{Bias, LineEnding, SelectionGoal};
 use workspace::searchable::{Direction, FilteredSearchRange};
 
+use text::Selection;
+
 use crate::{
     Vim,
     motion::Motion,
     object::Object,
-    state::{KakouneObjectTarget, KakouneRegexOp, Operator, SearchState},
+    state::{KakouneObjectTarget, KakouneRegexOp, Mode, Operator, SearchState},
 };
 
 actions!(
@@ -67,6 +69,13 @@ actions!(
         /// Aligns the selections by inserting spaces before their first
         /// characters.
         KakouneAlign,
+        /// Enters the lock view mode, where view keys can be repeated until
+        /// escape.
+        PushKakouneView,
+        /// Undoes the last selection change.
+        KakouneSelectionUndo,
+        /// Redoes the last selection change.
+        KakouneSelectionRedo,
     ]
 );
 
@@ -87,6 +96,30 @@ pub struct KakouneRotateMain {
 pub struct KakouneRotateContent {
     #[serde(default)]
     backward: bool,
+}
+
+/// Combines the saved selections with the current ones (Kakoune's
+/// `alt-z`/`alt-Z` menus). With `save`, the result is written back into the
+/// saved slot instead of the editor.
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
+#[action(namespace = vim)]
+#[serde(deny_unknown_fields)]
+pub struct KakouneCombineSelections {
+    kind: CombineKind,
+    #[serde(default)]
+    save: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum CombineKind {
+    Append,
+    Union,
+    Intersect,
+    SelectLeftmost,
+    SelectRightmost,
+    SelectLongest,
+    SelectShortest,
 }
 
 /// Pastes every yanked selection at each selection and selects each pasted
@@ -346,6 +379,23 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     );
     Vim::action(editor, cx, |vim, _: &KakouneAlign, window, cx| {
         vim.kakoune_align(window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &PushKakouneView, window, cx| {
+        vim.clear_operator(window, cx);
+        vim.push_operator(Operator::KakouneView, window, cx);
+    });
+    Vim::action(
+        editor,
+        cx,
+        |vim, action: &KakouneCombineSelections, window, cx| {
+            vim.kakoune_combine_selections(action.kind, action.save, window, cx);
+        },
+    );
+    Vim::action(editor, cx, |vim, _: &KakouneSelectionUndo, window, cx| {
+        vim.kakoune_selection_history_step(false, window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &KakouneSelectionRedo, window, cx| {
+        vim.kakoune_selection_history_step(true, window, cx);
     });
     Vim::action(editor, cx, |vim, _: &KakouneAddSelectionNext, window, cx| {
         vim.do_helix_select(Direction::Next, true, window, cx);
@@ -1387,6 +1437,186 @@ impl Vim {
         });
     }
 
+    /// Kakoune's `alt-z`/`alt-Z` combine menus: the saved selections are the
+    /// receiver and are combined pairwise with the current ones (except for
+    /// append). With `save`, the result replaces the saved slot instead of
+    /// the editor's selections.
+    fn kakoune_combine_selections(
+        &mut self,
+        kind: CombineKind,
+        save: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_editor(cx, |vim, editor, cx| {
+            if vim.kakoune_saved_selections.is_empty() {
+                return;
+            }
+            let display_map = editor.display_snapshot(cx);
+            let buffer_snapshot = display_map.buffer_snapshot();
+
+            // `(range, head)` pairs; the head is needed for the leftmost and
+            // rightmost cursor comparisons.
+            let resolve =
+                |start: MultiBufferOffset, end: MultiBufferOffset, reversed: bool| {
+                    let head = if reversed { start } else { end };
+                    (start..end, head)
+                };
+            let saved: Vec<_> = vim
+                .kakoune_saved_selections
+                .iter()
+                .map(|selection| {
+                    resolve(
+                        selection.start.to_offset(buffer_snapshot),
+                        selection.end.to_offset(buffer_snapshot),
+                        selection.reversed,
+                    )
+                })
+                .collect();
+            let current: Vec<_> = editor
+                .selections
+                .all::<MultiBufferOffset>(&display_map)
+                .into_iter()
+                .map(|selection| resolve(selection.start, selection.end, selection.reversed))
+                .collect();
+
+            let combined: Vec<Range<MultiBufferOffset>> = if kind == CombineKind::Append {
+                saved
+                    .iter()
+                    .chain(current.iter())
+                    .map(|(range, _)| range.clone())
+                    .collect()
+            } else {
+                // Kakoune errors when the counts differ.
+                if saved.len() != current.len() {
+                    return;
+                }
+                saved
+                    .iter()
+                    .zip(current.iter())
+                    .map(|((saved_range, saved_head), (current_range, current_head))| {
+                        match kind {
+                            CombineKind::Union => {
+                                saved_range.start.min(current_range.start)
+                                    ..saved_range.end.max(current_range.end)
+                            }
+                            CombineKind::Intersect => {
+                                let start = saved_range.start.max(current_range.start);
+                                let end = saved_range.end.min(current_range.end);
+                                if start <= end { start..end } else { end..start }
+                            }
+                            CombineKind::SelectLeftmost => {
+                                if saved_head <= current_head {
+                                    saved_range.clone()
+                                } else {
+                                    current_range.clone()
+                                }
+                            }
+                            CombineKind::SelectRightmost => {
+                                if saved_head >= current_head {
+                                    saved_range.clone()
+                                } else {
+                                    current_range.clone()
+                                }
+                            }
+                            CombineKind::SelectLongest => {
+                                if saved_range.end.0 - saved_range.start.0
+                                    >= current_range.end.0 - current_range.start.0
+                                {
+                                    saved_range.clone()
+                                } else {
+                                    current_range.clone()
+                                }
+                            }
+                            CombineKind::SelectShortest => {
+                                if saved_range.end.0 - saved_range.start.0
+                                    <= current_range.end.0 - current_range.start.0
+                                {
+                                    saved_range.clone()
+                                } else {
+                                    current_range.clone()
+                                }
+                            }
+                            CombineKind::Append => unreachable!(),
+                        }
+                    })
+                    .collect()
+            };
+
+            if save {
+                vim.kakoune_saved_selections = combined
+                    .into_iter()
+                    .enumerate()
+                    .map(|(id, range)| Selection {
+                        id,
+                        start: buffer_snapshot.anchor_before(range.start),
+                        end: buffer_snapshot.anchor_before(range.end),
+                        reversed: false,
+                        goal: SelectionGoal::None,
+                    })
+                    .collect();
+            } else {
+                editor.change_selections(Default::default(), window, cx, |s| {
+                    s.select_ranges(combined);
+                });
+            }
+        });
+    }
+
+    /// Records selection changes for Kakoune's selection history (`alt-u`).
+    /// Called for every local selection change on the editor.
+    pub(crate) fn kakoune_record_selection_history(&mut self, cx: &mut Context<Self>) {
+        if self.mode != Mode::KakouneNormal || self.kakoune_restoring_selections {
+            return;
+        }
+        let Some(editor) = self.editor() else {
+            return;
+        };
+        let current = editor.read(cx).selections.disjoint_anchors().to_vec();
+        if current == self.kakoune_last_selections {
+            return;
+        }
+        if !self.kakoune_last_selections.is_empty() {
+            self.kakoune_selection_undo
+                .push(std::mem::take(&mut self.kakoune_last_selections));
+            if self.kakoune_selection_undo.len() > 100 {
+                self.kakoune_selection_undo.remove(0);
+            }
+            self.kakoune_selection_redo.clear();
+        }
+        self.kakoune_last_selections = current;
+    }
+
+    /// Kakoune's `alt-u`/`alt-U`: walk the selection history.
+    fn kakoune_selection_history_step(
+        &mut self,
+        redo: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entry = if redo {
+            self.kakoune_selection_redo.pop()
+        } else {
+            self.kakoune_selection_undo.pop()
+        };
+        let Some(entry) = entry else {
+            return;
+        };
+        let current = std::mem::replace(&mut self.kakoune_last_selections, entry.clone());
+        if redo {
+            self.kakoune_selection_undo.push(current);
+        } else {
+            self.kakoune_selection_redo.push(current);
+        }
+        self.kakoune_restoring_selections = true;
+        self.update_editor(cx, |_, editor, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_anchors(entry);
+            });
+        });
+        self.kakoune_restoring_selections = false;
+    }
+
     /// Kakoune's `alt-,`: drop the main (newest) selection, keeping the rest.
     fn kakoune_clear_main_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.update_editor(cx, |_, editor, cx| {
@@ -1504,7 +1734,10 @@ impl Vim {
 
 #[cfg(test)]
 mod test {
-    use crate::{state::Mode, test::VimTestContext};
+    use crate::{
+        state::{Mode, Operator},
+        test::VimTestContext,
+    };
 
     #[gpui::test]
     async fn test_initial_mode(cx: &mut gpui::TestAppContext) {
@@ -2254,6 +2487,86 @@ mod test {
             ˇ»"},
             Mode::KakouneNormal,
         );
+    }
+
+    #[gpui::test]
+    async fn test_lock_view_mode(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        cx.set_state("ˇone\ntwo\nthree", Mode::KakouneNormal);
+        cx.simulate_keystrokes("shift-v");
+        assert_eq!(cx.active_operator(), Some(Operator::KakouneView));
+
+        // View keys keep the mode active so they can be repeated.
+        cx.simulate_keystrokes("j j");
+        assert_eq!(cx.active_operator(), Some(Operator::KakouneView));
+
+        cx.simulate_keystrokes("escape");
+        assert_eq!(cx.active_operator(), None);
+    }
+
+    #[gpui::test]
+    async fn test_combine_selections(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // Save «one», move to «two », then take the pairwise union.
+        cx.set_state("«oneˇ» two three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("shift-z w w");
+        cx.assert_state("one «two ˇ»three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-z u");
+        cx.assert_state("«one two ˇ»three", Mode::KakouneNormal);
+
+        // Append keeps both selection sets.
+        cx.set_state("«oneˇ» two three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("shift-z w w");
+        cx.simulate_keystrokes("alt-z a");
+        cx.assert_state("«oneˇ» «two ˇ»three", Mode::KakouneNormal);
+
+        // The shortest of each pair wins with `-`.
+        cx.set_state("«oneˇ» two three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("shift-z w w");
+        cx.simulate_keystrokes("alt-z -");
+        cx.assert_state("«oneˇ» two three", Mode::KakouneNormal);
+
+        // `alt-Z` writes the combination into the saved slot instead; `z`
+        // then restores it.
+        cx.set_state("«oneˇ» two three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("shift-z w w");
+        cx.simulate_keystrokes("alt-shift-z u");
+        cx.assert_state("one «two ˇ»three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("z");
+        cx.assert_state("«one two ˇ»three", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_selection_history(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        cx.set_state("ˇone two three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("w");
+        cx.assert_state("«one ˇ»two three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("w");
+        cx.assert_state("one «two ˇ»three", Mode::KakouneNormal);
+
+        // `alt-u` walks the selection history backwards.
+        cx.simulate_keystrokes("alt-u");
+        cx.assert_state("«one ˇ»two three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-u");
+        cx.assert_state("ˇone two three", Mode::KakouneNormal);
+
+        // `alt-U` walks it forwards again.
+        cx.simulate_keystrokes("alt-shift-u");
+        cx.assert_state("«one ˇ»two three", Mode::KakouneNormal);
+
+        // A new selection change clears the redo history, so redoing after
+        // it is a no-op.
+        cx.simulate_keystrokes("; w");
+        cx.assert_state("one «two ˇ»three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-u");
+        cx.assert_state("one «two ˇ»three", Mode::KakouneNormal);
     }
 
     #[gpui::test]
