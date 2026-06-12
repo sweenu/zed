@@ -8,10 +8,12 @@
 use editor::display_map::{DisplaySnapshot, ToDisplayPoint};
 use editor::{Editor, MultiBufferOffset, movement};
 use gpui::{Action, Context, Window, actions};
-use language::{CharClassifier, CharKind};
+use language::{CharClassifier, CharKind, Point};
+use multi_buffer::MultiBufferRow;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use text::{Bias, SelectionGoal};
+use workspace::searchable::Direction;
 
 use crate::{Vim, motion::Motion};
 
@@ -20,6 +22,16 @@ actions!(
     [
         /// Sets the direction of each selection to forward (cursor after anchor).
         KakouneEnsureForward,
+        /// Expands selections to contain full lines, including the trailing
+        /// end-of-line.
+        KakouneExpandToLines,
+        /// Trims selections to only contain full lines, excluding the last
+        /// end-of-line.
+        KakouneTrimToLines,
+        /// Adds a new selection with the next match for the current search query.
+        KakouneAddSelectionNext,
+        /// Adds a new selection with the previous match for the current search query.
+        KakouneAddSelectionPrevious,
     ]
 );
 
@@ -59,6 +71,7 @@ enum KakouneMotionKind {
     Matching,
     SelectToLineBegin,
     SelectToLineEnd,
+    EndOfBuffer,
 }
 
 impl KakouneMotionKind {
@@ -92,6 +105,9 @@ impl KakouneMotionKind {
             Self::Matching => Motion::Matching {
                 match_quotes: false,
             },
+            // EndOfBuffer is handled by `kakoune_end_of_buffer` and never
+            // converted; EndOfDocument is its closest equivalent.
+            Self::EndOfBuffer => Motion::EndOfDocument,
         }
     }
 
@@ -109,6 +125,10 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     Vim::action(editor, cx, |vim, action: &KakouneMotion, window, cx| {
         let times = Vim::take_count(cx);
         Vim::take_forced_motion(cx);
+        if action.motion == KakouneMotionKind::EndOfBuffer {
+            vim.kakoune_end_of_buffer(action.extend, window, cx);
+            return;
+        }
         let motion = action.motion.to_motion(action.ignore_punctuation);
         if !action.extend && action.motion.selects_to_target() {
             let include_target = action.motion == KakouneMotionKind::Matching;
@@ -126,6 +146,22 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
             });
         });
     });
+    Vim::action(editor, cx, |vim, _: &KakouneExpandToLines, window, cx| {
+        vim.kakoune_expand_to_lines(window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &KakouneTrimToLines, window, cx| {
+        vim.kakoune_trim_to_lines(window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &KakouneAddSelectionNext, window, cx| {
+        vim.do_helix_select(Direction::Next, true, window, cx);
+    });
+    Vim::action(
+        editor,
+        cx,
+        |vim, _: &KakouneAddSelectionPrevious, window, cx| {
+            vim.do_helix_select(Direction::Prev, true, window, cx);
+        },
+    );
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -273,6 +309,20 @@ impl Vim {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Motion::ZedSearchResult {
+            prior_selections,
+            new_selections,
+        } = &motion
+        {
+            self.kakoune_search_result(prior_selections.clone(), new_selections.clone(), window, cx);
+            return;
+        }
+        // Kakoune's goto-line commands (gg, gj, and count-prefixed goto) land
+        // on column 0 of the target line rather than preserving the column.
+        if matches!(motion, Motion::StartOfDocument | Motion::EndOfDocument) {
+            self.kakoune_goto_line(motion, times, extend, window, cx);
+            return;
+        }
         if extend {
             // Helix select mode extends selections exactly like Kakoune's
             // Shift-modified movements.
@@ -396,6 +446,150 @@ impl Vim {
                         selection.set_head_tail(head, cursor, SelectionGoal::None);
                     }
                 })
+            });
+        });
+    }
+
+    /// `/` selects the next match; `?` extends the current selection up to
+    /// the end of the next match.
+    fn kakoune_search_result(
+        &mut self,
+        prior_selections: Vec<std::ops::Range<editor::Anchor>>,
+        new_selections: Vec<std::ops::Range<editor::Anchor>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let extend = std::mem::take(&mut self.search.kakoune_extend);
+        self.update_editor(cx, |_, editor, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                if extend
+                    && let (Some(prior), Some(target)) =
+                        (prior_selections.last(), new_selections.last())
+                {
+                    s.select_anchor_ranges([prior.start..target.end]);
+                } else {
+                    s.select_anchor_ranges(new_selections.clone());
+                }
+            });
+        });
+    }
+
+    fn kakoune_goto_line(
+        &mut self,
+        motion: Motion,
+        times: Option<usize>,
+        extend: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_editor(cx, |_, editor, cx| {
+            let text_layout_details = editor.text_layout_details(window, cx);
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.move_with(&mut |map, selection| {
+                    let cursor = if selection.reversed || selection.is_empty() {
+                        selection.head()
+                    } else {
+                        movement::left(map, selection.head())
+                    };
+                    let Some((point, _)) = motion.move_point(
+                        map,
+                        cursor,
+                        selection.goal,
+                        times,
+                        &text_layout_details,
+                    ) else {
+                        return;
+                    };
+                    let target = movement::line_beginning(map, point, false);
+                    if extend {
+                        selection.set_head(target, SelectionGoal::None);
+                        if !selection.reversed {
+                            selection.end = movement::right(map, selection.end);
+                        }
+                    } else {
+                        selection.collapse_to(target, SelectionGoal::None);
+                    }
+                });
+            });
+        });
+    }
+
+    fn kakoune_end_of_buffer(&mut self, extend: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor(cx, |_, editor, cx| {
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.move_with(&mut |map, selection| {
+                    let max = map.max_point();
+                    if extend {
+                        selection.set_head(max, SelectionGoal::None);
+                    } else {
+                        // The cursor lands on the buffer's last character.
+                        let target = movement::saturating_left(map, max);
+                        selection.collapse_to(target, SelectionGoal::None);
+                    }
+                })
+            });
+        });
+    }
+
+    /// Kakoune's `x`: expand each selection to cover whole lines, including
+    /// the trailing end-of-line.
+    fn kakoune_expand_to_lines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_map.update(cx, |map, cx| map.snapshot(cx));
+            let mut selections = editor.selections.all::<Point>(&display_map);
+            let max_point = display_map.buffer_snapshot().max_point();
+
+            for selection in &mut selections {
+                let last_row = if selection.end.column == 0 && selection.end.row > selection.start.row
+                {
+                    selection.end.row - 1
+                } else {
+                    selection.end.row
+                };
+                selection.start = Point::new(selection.start.row, 0);
+                selection.end = Point::new(last_row + 1, 0).min(max_point);
+            }
+
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select(selections);
+            });
+        });
+    }
+
+    /// Kakoune's `alt-x`: trim each selection to only cover whole lines,
+    /// excluding the last end-of-line. Selections that don't span a full
+    /// line are left untouched.
+    fn kakoune_trim_to_lines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_map.update(cx, |map, cx| map.snapshot(cx));
+            let mut selections = editor.selections.all::<Point>(&display_map);
+            let buffer_snapshot = display_map.buffer_snapshot();
+            let max_point = buffer_snapshot.max_point();
+
+            for selection in &mut selections {
+                let mut start = selection.start;
+                let mut end = selection.end;
+                if start.column != 0 {
+                    start = Point::new(start.row + 1, 0);
+                }
+                let end_is_line_boundary = end.column == 0
+                    || (end == max_point
+                        && end.column == buffer_snapshot.line_len(MultiBufferRow(end.row)));
+                if !end_is_line_boundary {
+                    if end.row == 0 {
+                        continue;
+                    }
+                    end = Point::new(end.row, 0);
+                }
+                if start >= end {
+                    continue;
+                }
+                selection.start = start;
+                selection.end = end;
+            }
+
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select(selections);
             });
         });
     }
@@ -568,6 +762,127 @@ mod test {
         cx.set_state("one ˇtwo three", Mode::KakouneNormal);
         cx.simulate_keystrokes("alt-h");
         cx.assert_state("«ˇone t»wo three", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_expand_and_trim_lines(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `x` expands to the full line, including the end-of-line, and is
+        // idempotent.
+        cx.set_state(
+            indoc::indoc! {"
+            one
+            tˇwo
+            three"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("x");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            «two
+            ˇ»three"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("x");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            «two
+            ˇ»three"},
+            Mode::KakouneNormal,
+        );
+
+        // `alt-x` trims partially selected lines.
+        cx.set_state(
+            indoc::indoc! {"
+            o«ne
+            two
+            thˇ»ree"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("alt-x");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            «two
+            ˇ»three"},
+            Mode::KakouneNormal,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_goto(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        cx.set_state(
+            indoc::indoc! {"
+            one
+            two
+            thrˇee"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("g g");
+        cx.assert_state(
+            indoc::indoc! {"
+            ˇone
+            two
+            three"},
+            Mode::KakouneNormal,
+        );
+
+        cx.simulate_keystrokes("g e");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            two
+            threˇe"},
+            Mode::KakouneNormal,
+        );
+
+        cx.simulate_keystrokes("g h");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            two
+            ˇthree"},
+            Mode::KakouneNormal,
+        );
+
+        // `G` extends the selection to the goto target.
+        cx.simulate_keystrokes("shift-g l");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            two
+            «threeˇ»"},
+            Mode::KakouneNormal,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_search(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `/` selects the next match.
+        cx.set_state("ˇone two three two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("/ t w o");
+        cx.simulate_keystrokes("enter");
+        cx.assert_state("one «twoˇ» three two", Mode::KakouneNormal);
+
+        // `n` selects the next match, `N` adds a selection with it.
+        cx.simulate_keystrokes("n");
+        cx.assert_state("one two three «twoˇ»", Mode::KakouneNormal);
+
+        // `?` extends the selection up to the end of the next match.
+        cx.set_state("ˇone two three two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("? t w o");
+        cx.simulate_keystrokes("enter");
+        cx.assert_state("«one twoˇ» three two", Mode::KakouneNormal);
     }
 
     #[gpui::test]
