@@ -2157,22 +2157,26 @@ pub fn handle_keymap_file_changes(
     let mut old_base_keymap = *BaseKeymap::get_global(cx);
     let mut old_vim_enabled = VimModeSetting::get_global(cx).0;
     let mut old_helix_enabled = vim_mode_setting::HelixModeSetting::get_global(cx).0;
+    let mut old_kakoune_enabled = vim_mode_setting::KakouneModeSetting::get_global(cx).0;
     let mut old_disable_ai = DisableAiSettings::get_global(cx).disable_ai;
 
     cx.observe_global::<SettingsStore>(move |cx| {
         let new_base_keymap = *BaseKeymap::get_global(cx);
         let new_vim_enabled = VimModeSetting::get_global(cx).0;
         let new_helix_enabled = vim_mode_setting::HelixModeSetting::get_global(cx).0;
+        let new_kakoune_enabled = vim_mode_setting::KakouneModeSetting::get_global(cx).0;
         let new_disable_ai = DisableAiSettings::get_global(cx).disable_ai;
 
         if new_base_keymap != old_base_keymap
             || new_vim_enabled != old_vim_enabled
             || new_helix_enabled != old_helix_enabled
+            || new_kakoune_enabled != old_kakoune_enabled
             || new_disable_ai != old_disable_ai
         {
             old_base_keymap = new_base_keymap;
             old_vim_enabled = new_vim_enabled;
             old_helix_enabled = new_helix_enabled;
+            old_kakoune_enabled = new_kakoune_enabled;
             old_disable_ai = new_disable_ai;
 
             base_keymap_tx.unbounded_send(()).unwrap();
@@ -2374,7 +2378,10 @@ pub fn load_default_keymap(cx: &mut App) {
         ));
     }
 
-    if VimModeSetting::get_global(cx).0 || vim_mode_setting::HelixModeSetting::get_global(cx).0 {
+    if VimModeSetting::get_global(cx).0
+        || vim_mode_setting::HelixModeSetting::get_global(cx).0
+        || vim_mode_setting::KakouneModeSetting::get_global(cx).0
+    {
         cx.bind_keys(filter_disabled_ai_bindings(
             KeymapFile::load_asset(VIM_KEYMAP_PATH, Some(KeybindSource::Vim), cx).unwrap(),
             cx,
