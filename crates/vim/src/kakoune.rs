@@ -5,21 +5,25 @@
 //! has no select mode: selections are extended per-keystroke with
 //! Shift-modified movement keys instead.
 
+use std::ops::Range;
+
 use editor::display_map::{DisplaySnapshot, ToDisplayPoint};
-use editor::{Editor, MultiBufferOffset, movement};
-use gpui::{Action, Context, Window, actions};
+use editor::{Anchor, Editor, EditorSettings, MultiBufferOffset, ToOffset, movement};
+use gpui::{Action, Context, TaskExt, Window, actions};
 use language::{CharClassifier, CharKind, Point};
 use multi_buffer::MultiBufferRow;
 use schemars::JsonSchema;
+use search::{BufferSearchBar, SearchOptions};
 use serde::Deserialize;
+use settings::Settings;
 use text::{Bias, SelectionGoal};
-use workspace::searchable::Direction;
+use workspace::searchable::{Direction, FilteredSearchRange};
 
 use crate::{
     Vim,
     motion::Motion,
     object::Object,
-    state::{KakouneObjectTarget, Operator},
+    state::{KakouneObjectTarget, KakouneRegexOp, Operator, SearchState},
 };
 
 actions!(
@@ -41,6 +45,16 @@ actions!(
         KakouneAddLineBelow,
         /// Adds an empty line above the cursor without entering insert mode.
         KakouneAddLineAbove,
+        /// Splits the selections on the matches of a prompted regex.
+        KakouneSplitSelections,
+        /// Keeps only the selections matching a prompted regex.
+        KakouneKeepMatching,
+        /// Drops the selections matching a prompted regex.
+        KakouneClearMatching,
+        /// Selects the first and last characters of each selection.
+        KakouneSelectBoundaryChars,
+        /// Clears the main selection, keeping the others.
+        KakouneClearMainSelection,
     ]
 );
 
@@ -208,6 +222,29 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     Vim::action(editor, cx, |vim, _: &KakouneAddLineAbove, window, cx| {
         vim.kakoune_add_line(true, window, cx);
     });
+    Vim::action(editor, cx, |vim, _: &KakouneSplitSelections, window, cx| {
+        vim.kakoune_regex_prompt(KakouneRegexOp::Split, window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &KakouneKeepMatching, window, cx| {
+        vim.kakoune_regex_prompt(KakouneRegexOp::KeepMatching, window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &KakouneClearMatching, window, cx| {
+        vim.kakoune_regex_prompt(KakouneRegexOp::ClearMatching, window, cx);
+    });
+    Vim::action(
+        editor,
+        cx,
+        |vim, _: &KakouneSelectBoundaryChars, window, cx| {
+            vim.kakoune_select_boundary_chars(window, cx);
+        },
+    );
+    Vim::action(
+        editor,
+        cx,
+        |vim, _: &KakouneClearMainSelection, window, cx| {
+            vim.kakoune_clear_main_selection(window, cx);
+        },
+    );
     Vim::action(editor, cx, |vim, _: &KakouneAddSelectionNext, window, cx| {
         vim.do_helix_select(Direction::Next, true, window, cx);
     });
@@ -625,6 +662,183 @@ impl Vim {
                         );
                     }
                 });
+            });
+        });
+    }
+
+    /// Opens the search prompt for a selection transformation (`S`, `alt-k`,
+    /// `alt-K`); the transformation runs when the prompt is submitted.
+    fn kakoune_regex_prompt(
+        &mut self,
+        op: KakouneRegexOp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        Vim::take_forced_motion(cx);
+        let Some(pane) = self.pane(window, cx) else {
+            return;
+        };
+        let prior_selections = self.editor_selections(window, cx);
+        pane.update(cx, |pane, cx| {
+            if let Some(search_bar) = pane.toolbar().read(cx).item_of_type::<BufferSearchBar>() {
+                search_bar.update(cx, |search_bar, cx| {
+                    if !search_bar.show(window, cx) {
+                        return;
+                    }
+
+                    search_bar.select_query(window, cx);
+                    cx.focus_self(window);
+
+                    search_bar.set_replacement(None, cx);
+                    let mut options = SearchOptions::REGEX;
+                    if EditorSettings::get_global(cx).search.case_sensitive {
+                        options |= SearchOptions::CASE_SENSITIVE;
+                    }
+                    search_bar.set_search_options(options, cx);
+                    if let Some(search) = search_bar.set_search_within_selection(
+                        Some(FilteredSearchRange::Selection),
+                        window,
+                        cx,
+                    ) {
+                        cx.spawn_in(window, async move |search_bar, cx| {
+                            if search.await.is_ok() {
+                                search_bar.update_in(cx, |search_bar, window, cx| {
+                                    search_bar.activate_current_match(window, cx)
+                                })
+                            } else {
+                                Ok(())
+                            }
+                        })
+                        .detach_and_log_err(cx);
+                    }
+                    self.search = SearchState {
+                        direction: Direction::Next,
+                        count: 1,
+                        cmd_f_search: false,
+                        prior_selections,
+                        prior_operator: self.operator_stack.last().cloned(),
+                        prior_mode: self.mode,
+                        helix_select: false,
+                        kakoune_extend: false,
+                        kakoune_regex_op: Some(op),
+                        _dismiss_subscription: None,
+                    }
+                });
+            }
+        });
+    }
+
+    /// Applies a pending selection transformation, where the editor's current
+    /// selections are the regex matches within the prior selections.
+    pub(crate) fn kakoune_apply_regex_op(
+        &mut self,
+        op: KakouneRegexOp,
+        prior_selections: Vec<Range<Anchor>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let buffer_snapshot = display_map.buffer_snapshot();
+            let matches: Vec<Range<MultiBufferOffset>> = editor
+                .selections
+                .all::<MultiBufferOffset>(&display_map)
+                .into_iter()
+                .map(|selection| selection.start..selection.end)
+                .collect();
+            let priors: Vec<Range<MultiBufferOffset>> = prior_selections
+                .iter()
+                .map(|range| range.start.to_offset(buffer_snapshot)..range.end.to_offset(buffer_snapshot))
+                .collect();
+
+            let mut new_ranges = Vec::new();
+            match op {
+                KakouneRegexOp::Split => {
+                    for prior in &priors {
+                        let mut cursor = prior.start;
+                        for matched in matches
+                            .iter()
+                            .filter(|matched| matched.start >= prior.start && matched.end <= prior.end)
+                        {
+                            if matched.start > cursor {
+                                new_ranges.push(cursor..matched.start);
+                            }
+                            cursor = cursor.max(matched.end);
+                        }
+                        if cursor < prior.end {
+                            new_ranges.push(cursor..prior.end);
+                        }
+                    }
+                }
+                KakouneRegexOp::KeepMatching | KakouneRegexOp::ClearMatching => {
+                    let keep = op == KakouneRegexOp::KeepMatching;
+                    for prior in &priors {
+                        let has_match = matches
+                            .iter()
+                            .any(|matched| matched.start < prior.end && matched.end > prior.start);
+                        if has_match == keep {
+                            new_ranges.push(prior.clone());
+                        }
+                    }
+                }
+            }
+            // Kakoune refuses transformations that would leave no selection.
+            if new_ranges.is_empty() {
+                new_ranges = priors;
+            }
+
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges(new_ranges);
+            });
+        });
+    }
+
+    /// Kakoune's `alt-S`: select the first and last characters of each
+    /// selection.
+    fn kakoune_select_boundary_chars(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let buffer_snapshot = display_map.buffer_snapshot();
+            let mut new_ranges = Vec::new();
+            for selection in editor.selections.all::<MultiBufferOffset>(&display_map) {
+                let (start, end) = (selection.start, selection.end);
+                let first_end = match buffer_snapshot.chars_at(start).next() {
+                    Some(c) if start + c.len_utf8() < end => start + c.len_utf8(),
+                    _ => {
+                        new_ranges.push(start..end);
+                        continue;
+                    }
+                };
+                new_ranges.push(start..first_end);
+                if let Some(c) = buffer_snapshot.reversed_chars_at(end).next() {
+                    let last_start = end - c.len_utf8();
+                    if last_start >= first_end {
+                        new_ranges.push(last_start..end);
+                    }
+                }
+            }
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges(new_ranges);
+            });
+        });
+    }
+
+    /// Kakoune's `alt-,`: drop the main (newest) selection, keeping the rest.
+    fn kakoune_clear_main_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let newest_id = editor.selections.newest_anchor().id;
+            let selections = editor.selections.all::<MultiBufferOffset>(&display_map);
+            if selections.len() <= 1 {
+                return;
+            }
+            let new_ranges: Vec<_> = selections
+                .iter()
+                .filter(|selection| selection.id != newest_id)
+                .map(|selection| selection.start..selection.end)
+                .collect();
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges(new_ranges);
             });
         });
     }
@@ -1146,6 +1360,79 @@ mod test {
         cx.set_state("foo(bar «bazˇ» qux)end", Mode::KakouneNormal);
         cx.simulate_keystrokes("} b");
         cx.assert_state("foo(bar «baz qux)ˇ»end", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_split_selections(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `S` splits the selection on the regex matches.
+        cx.set_state("«one, two, threeˇ» end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("shift-s , space");
+        cx.simulate_keystrokes("enter");
+        cx.assert_state("«oneˇ», «twoˇ», «threeˇ» end", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_keep_and_clear_matching(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // Three selections, one per line; keep the ones matching "o".
+        cx.set_state(
+            indoc::indoc! {"
+            «oneˇ»
+            «twoˇ»
+            «threeˇ»"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("alt-k o");
+        cx.simulate_keystrokes("enter");
+        cx.assert_state(
+            indoc::indoc! {"
+            «oneˇ»
+            «twoˇ»
+            three"},
+            Mode::KakouneNormal,
+        );
+
+        // Now clear the ones matching "n".
+        cx.simulate_keystrokes("alt-shift-k n");
+        cx.simulate_keystrokes("enter");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            «twoˇ»
+            three"},
+            Mode::KakouneNormal,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_boundary_chars_and_clear_main(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `alt-S` selects the first and last characters of the selection.
+        cx.set_state("«helloˇ» world", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-s");
+        cx.assert_state("«hˇ»ell«oˇ» world", Mode::KakouneNormal);
+
+        // `alt-,` clears the main (newest) selection.
+        cx.set_state(
+            indoc::indoc! {"
+            «oneˇ»
+            «twoˇ»"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("alt-,");
+        cx.assert_state(
+            indoc::indoc! {"
+            «oneˇ»
+            two"},
+            Mode::KakouneNormal,
+        );
     }
 
     #[gpui::test]
