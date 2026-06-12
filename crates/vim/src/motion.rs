@@ -718,6 +718,14 @@ impl Vim {
     }
 
     pub(crate) fn motion(&mut self, motion: Motion, window: &mut Window, cx: &mut Context<Self>) {
+        // Kakoune's extending find (`F`/`T`) carries the extend flag on the
+        // operator, so it must be read before the operator is popped.
+        let mut find_extend = false;
+        if let Some(Operator::FindForward { extend, .. })
+        | Some(Operator::FindBackward { extend, .. }) = self.active_operator()
+        {
+            find_extend = extend;
+        }
         if let Some(Operator::FindForward { .. })
         | Some(Operator::Sneak { .. })
         | Some(Operator::SneakBackward { .. })
@@ -746,7 +754,7 @@ impl Vim {
 
             Mode::HelixNormal => self.helix_normal_motion(motion, count, window, cx),
             Mode::HelixSelect => self.helix_select_motion(motion, count, window, cx),
-            Mode::KakouneNormal => self.kakoune_motion(motion, count, window, cx),
+            Mode::KakouneNormal => self.kakoune_motion(motion, count, find_extend, window, cx),
         }
         self.clear_operator(window, cx);
         if let Some(operator) = waiting_operator {
