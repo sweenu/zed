@@ -212,7 +212,7 @@ impl Vim {
                         }
                     }
 
-                    Mode::HelixNormal | Mode::HelixSelect => {
+                    Mode::HelixNormal | Mode::HelixSelect | Mode::KakouneNormal => {
                         if selection.is_empty() {
                             // Handle empty selection by operating on single character
                             let start = selection.start;
@@ -256,7 +256,7 @@ impl Vim {
                 })
             });
         });
-        if self.mode != Mode::HelixNormal {
+        if !matches!(self.mode, Mode::HelixNormal | Mode::KakouneNormal) {
             self.switch_mode(Mode::Normal, true, window, cx)
         }
     }
