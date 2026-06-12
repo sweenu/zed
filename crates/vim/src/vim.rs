@@ -555,6 +555,11 @@ pub(crate) struct Vim {
     pub(crate) stored_visual_mode: Option<(Mode, Vec<bool>)>,
     /// Selections saved by Kakoune mode's `Z`, restored by `z`.
     pub(crate) kakoune_saved_selections: Vec<Selection<Anchor>>,
+    /// Kakoune mode's selection history, walked by `alt-u` and `alt-U`.
+    pub(crate) kakoune_selection_undo: Vec<Vec<Selection<Anchor>>>,
+    pub(crate) kakoune_selection_redo: Vec<Vec<Selection<Anchor>>>,
+    pub(crate) kakoune_last_selections: Vec<Selection<Anchor>>,
+    pub(crate) kakoune_restoring_selections: bool,
 
     pub(crate) current_tx: Option<TransactionId>,
     pub(crate) current_anchor: Option<Selection<Anchor>>,
@@ -625,6 +630,10 @@ impl Vim {
 
             stored_visual_mode: None,
             kakoune_saved_selections: Vec::new(),
+            kakoune_selection_undo: Vec::new(),
+            kakoune_selection_redo: Vec::new(),
+            kakoune_last_selections: Vec::new(),
+            kakoune_restoring_selections: false,
             current_tx: None,
             undo_last_line_tx: None,
             current_anchor: None,
@@ -2030,6 +2039,8 @@ impl Vim {
         if editor.read(cx).leader_id().is_some() {
             return;
         }
+
+        self.kakoune_record_selection_history(cx);
 
         let newest = editor.read(cx).selections.newest_anchor().clone();
         let is_multicursor = editor.read(cx).selections.count() > 1;
