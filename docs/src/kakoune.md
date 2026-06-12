@@ -27,6 +27,7 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 - Search: `/` selects the next match, `?` extends to it, `n`/`N` select or add the next match (`alt-n`/`alt-N` for the previous one), and `*` sets the search pattern from the selection.
 - Macros on `Q` (record) and `q` (replay), and registers via `"`.
 - View commands: `v` followed by `v`/`c` (center), `t` (top), `b` (bottom), or `j`/`k` (scroll), and `V` to lock the view mode until escape.
+- `\` disables hooks for the next command: autoindent is suppressed (including for a whole insert session, as in `\i`), and saving with `:w` or `ctrl-s` skips the formatter.
 
 ## Known deviations
 
@@ -36,3 +37,4 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 - Shell-driven commands (`|`, `!`, `$`, `@`) are not implemented yet.
 - Like Kakoune, `space` ships without default bindings; define your own user-mode style chords in your keymap with the `vim_mode == kakoune_normal` context.
 - In the lock view mode, keys other than the view keys execute their normal binding and leave the mode, instead of being ignored.
+- `\` covers autoindent and format-on-save; it does not suppress bracket auto-closing or completions.
