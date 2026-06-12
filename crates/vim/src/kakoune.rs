@@ -81,6 +81,8 @@ actions!(
         KakouneDisableHooks,
         /// Selects the number under the cursor during an object selection.
         KakouneNumberObject,
+        /// Selects the whitespace under the cursor during an object selection.
+        KakouneWhitespaceObject,
         /// Saves the active item without formatting it.
         KakouneSaveWithoutFormat,
     ]
@@ -411,6 +413,23 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
             cx,
         );
     });
+    Vim::action(
+        editor,
+        cx,
+        |vim, _: &KakouneWhitespaceObject, window, cx| {
+            let Some(Operator::KakouneObject { around, target }) = vim.active_operator() else {
+                vim.clear_operator(window, cx);
+                return;
+            };
+            vim.clear_operator(window, cx);
+            vim.kakoune_scanned_object(
+                target,
+                move |map, cursor| whitespace_range(map, cursor, around),
+                window,
+                cx,
+            );
+        },
+    );
     Vim::action(editor, cx, |vim, _: &KakouneDisableHooks, _, cx| {
         vim.kakoune_hooks_disabled = Some(KakouneHooksPhase::Armed);
         vim.status_label = Some("no hooks".into());
@@ -564,6 +583,36 @@ fn number_range(
     }
     while let Some(c) = char_at(map, end)
         && is_number(c)
+    {
+        end = next_char_start(map, end)?;
+    }
+
+    (start < end).then_some(start..end)
+}
+
+/// Kakoune's whitespace object: spaces and tabs when inner; `around` also
+/// crosses newlines.
+fn whitespace_range(
+    map: &DisplaySnapshot,
+    cursor: MultiBufferOffset,
+    around: bool,
+) -> Option<Range<MultiBufferOffset>> {
+    let is_whitespace = |c: char| c == ' ' || c == '\t' || (around && c == '\n');
+
+    if !is_whitespace(char_at(map, cursor)?) {
+        return None;
+    }
+
+    let mut start = cursor;
+    while let Some(previous) = previous_char_start(map, start)
+        && let Some(c) = char_at(map, previous)
+        && is_whitespace(c)
+    {
+        start = previous;
+    }
+    let mut end = cursor;
+    while let Some(c) = char_at(map, end)
+        && is_whitespace(c)
     {
         end = next_char_start(map, end)?;
     }
@@ -2900,6 +2949,49 @@ mod test {
         cx.set_state("ˇword 42", Mode::KakouneNormal);
         cx.simulate_keystrokes("alt-i n");
         cx.assert_state("ˇword 42", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_whitespace_object(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // Inner selects the run of spaces and tabs.
+        cx.set_state("one ˇ\t two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-i space");
+        cx.assert_state("one« \t ˇ»two", Mode::KakouneNormal);
+
+        // Around also crosses newlines.
+        cx.set_state(
+            indoc::indoc! {"
+            oneˇ \n two"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("alt-a space");
+        cx.assert_state(
+            indoc::indoc! {"
+            one« \n ˇ»two"},
+            Mode::KakouneNormal,
+        );
+
+        // Inner stops at the newline.
+        cx.set_state(
+            indoc::indoc! {"
+            oneˇ \n two"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("alt-i space");
+        cx.assert_state(
+            indoc::indoc! {"
+            one« ˇ»
+             two"},
+            Mode::KakouneNormal,
+        );
+
+        // Not on whitespace: no-op.
+        cx.set_state("ˇone two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-i space");
+        cx.assert_state("ˇone two", Mode::KakouneNormal);
     }
 
     #[gpui::test]
