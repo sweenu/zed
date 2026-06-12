@@ -716,6 +716,7 @@ impl Vim {
                         prior_operator: self.operator_stack.last().cloned(),
                         prior_mode: self.mode,
                         helix_select: true,
+                        kakoune_extend: false,
                         _dismiss_subscription: None,
                     }
                 });
@@ -958,7 +959,8 @@ impl Vim {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.do_helix_select(Direction::Next, window, cx);
+        let keep_prior = self.mode == Mode::HelixSelect;
+        self.do_helix_select(Direction::Next, keep_prior, window, cx);
     }
 
     fn helix_select_previous(
@@ -967,12 +969,14 @@ impl Vim {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.do_helix_select(Direction::Prev, window, cx);
+        let keep_prior = self.mode == Mode::HelixSelect;
+        self.do_helix_select(Direction::Prev, keep_prior, window, cx);
     }
 
-    fn do_helix_select(
+    pub(crate) fn do_helix_select(
         &mut self,
         direction: searchable::Direction,
+        keep_prior: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -999,7 +1003,7 @@ impl Vim {
         if !success {
             return;
         }
-        if self.mode == Mode::HelixSelect {
+        if keep_prior {
             self.update_editor(cx, |_vim, editor, cx| {
                 let snapshot = editor.snapshot(window, cx);
                 editor.change_selections(SelectionEffects::default(), window, cx, |s| {

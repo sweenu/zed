@@ -77,6 +77,10 @@ pub(crate) struct Search {
     backwards: bool,
     #[serde(default = "default_true")]
     regex: bool,
+    /// Extend the current selection to the match instead of selecting it
+    /// (used by Kakoune mode's `?`).
+    #[serde(default)]
+    extend: bool,
 }
 
 /// Executes a find command to search for patterns in the buffer.
@@ -289,6 +293,7 @@ impl Vim {
             prior_operator: self.operator_stack.last().cloned(),
             prior_mode,
             helix_select: false,
+            kakoune_extend: action.extend,
             _dismiss_subscription: Some(subscription),
         }
     }
