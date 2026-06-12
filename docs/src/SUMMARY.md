@@ -106,6 +106,7 @@
 - [Keybindings](./key-bindings.md)
   - [Vim Mode](./vim.md)
   - [Helix Mode](./helix.md)
+  - [Kakoune Mode](./kakoune.md)
 
 # Language Support
 
