@@ -51,6 +51,7 @@ pub enum Mode {
     VisualBlock,
     HelixNormal,
     HelixSelect,
+    KakouneNormal,
 }
 
 impl Display for Mode {
@@ -64,6 +65,7 @@ impl Display for Mode {
             Mode::VisualBlock => write!(f, "VISUAL BLOCK"),
             Mode::HelixNormal => write!(f, "NORMAL"),
             Mode::HelixSelect => write!(f, "SELECT"),
+            Mode::KakouneNormal => write!(f, "NORMAL"),
         }
     }
 }
@@ -72,7 +74,8 @@ impl Mode {
     pub fn is_visual(&self) -> bool {
         match self {
             Self::Visual | Self::VisualLine | Self::VisualBlock | Self::HelixSelect => true,
-            Self::Normal | Self::Insert | Self::Replace | Self::HelixNormal => false,
+            Self::Normal | Self::Insert | Self::Replace | Self::HelixNormal
+            | Self::KakouneNormal => false,
         }
     }
 
@@ -80,13 +83,14 @@ impl Mode {
         matches!(self, Self::HelixNormal | Self::HelixSelect)
     }
 
-    /// `HelixNormal` qualifies because its cursor is itself a one-character selection.
+    /// `HelixNormal` and `KakouneNormal` qualify because their cursor is itself
+    /// a one-character selection.
     pub fn has_selection(&self) -> bool {
-        self.is_visual() || matches!(self, Self::HelixNormal)
+        self.is_visual() || matches!(self, Self::HelixNormal | Self::KakouneNormal)
     }
 
     pub fn is_normal(&self) -> bool {
-        matches!(self, Self::Normal | Self::HelixNormal)
+        matches!(self, Self::Normal | Self::HelixNormal | Self::KakouneNormal)
     }
 }
 
