@@ -831,6 +831,7 @@
       "i": "vim::IndentObj",
       "u": "vim::Argument",
       "n": "vim::KakouneNumberObject",
+      "space": "vim::KakouneWhitespaceObject",
     },
   },
   {
