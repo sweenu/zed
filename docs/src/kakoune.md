@@ -32,7 +32,7 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 ## Known deviations
 
 - Registers, macros, and marks use Vim's machinery rather than Kakoune's register semantics; `Z`/`z` use a single slot instead of the `^` register.
-- `&` aligns the selection cursors only; Kakoune's column-group alignment for multiple selections per line is not implemented (`alt-&` copy-indent is not implemented either).
+- `alt-&` (copy indent) and the `aligntab` behavior of `&` are not implemented.
 - The number (`n`), whitespace (`space`), and custom (`c`) text objects are not implemented.
 - Shell-driven commands (`|`, `!`, `$`, `@`) are not implemented yet.
 - Like Kakoune, `space` ships without default bindings; define your own user-mode style chords in your keymap with the `vim_mode == kakoune_normal` context.
