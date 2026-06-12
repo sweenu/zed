@@ -79,6 +79,16 @@ pub struct KakouneRotateMain {
     backward: bool,
 }
 
+/// Rotates the contents of the selections, in groups of `count` selections
+/// when a count is given.
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
+#[action(namespace = vim)]
+#[serde(deny_unknown_fields)]
+pub struct KakouneRotateContent {
+    #[serde(default)]
+    backward: bool,
+}
+
 /// Moves the cursor in Kakoune mode, either replacing or extending the
 /// current selection.
 #[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
@@ -282,6 +292,13 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     Vim::action(editor, cx, |vim, action: &KakouneRotateMain, window, cx| {
         vim.kakoune_rotate_main(action.backward, window, cx);
     });
+    Vim::action(
+        editor,
+        cx,
+        |vim, action: &KakouneRotateContent, window, cx| {
+            vim.kakoune_rotate_content(action.backward, window, cx);
+        },
+    );
     Vim::action(editor, cx, |vim, _: &KakouneSaveSelections, _, cx| {
         vim.update_editor(cx, |vim, editor, _| {
             vim.kakoune_saved_selections = editor.selections.disjoint_anchors().to_vec();
@@ -1077,6 +1094,89 @@ impl Vim {
         });
     }
 
+    /// Kakoune's `alt-(`/`alt-)`: rotate the contents of the selections, in
+    /// groups of `count` selections when a count is given. The main selection
+    /// follows its content.
+    fn kakoune_rotate_content(
+        &mut self,
+        backward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let group_size = Vim::take_count(cx);
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let buffer_snapshot = display_map.buffer_snapshot();
+            let newest_id = editor.selections.newest_anchor().id;
+            let mut selections = editor.selections.all::<MultiBufferOffset>(&display_map);
+            if selections.len() <= 1 {
+                return;
+            }
+            let group = match group_size {
+                Some(group) if group <= selections.len() => group,
+                _ => selections.len(),
+            };
+
+            let mut texts: Vec<String> = selections
+                .iter()
+                .map(|selection| {
+                    buffer_snapshot
+                        .text_for_range(selection.start..selection.end)
+                        .collect()
+                })
+                .collect();
+            for chunk in texts.chunks_mut(group) {
+                if backward {
+                    chunk.rotate_left(1);
+                } else {
+                    chunk.rotate_right(1);
+                }
+            }
+
+            // The edits are expressed in pre-edit coordinates and applied
+            // atomically below.
+            let edits: Vec<_> = selections
+                .iter()
+                .zip(&texts)
+                .map(|(selection, text)| (selection.start..selection.end, text.clone()))
+                .collect();
+
+            // Recompute the selection ranges to cover the rotated contents.
+            let mut delta = 0isize;
+            for (selection, text) in selections.iter_mut().zip(&texts) {
+                let old_length = (selection.end.0 - selection.start.0) as isize;
+                let start = selection.start.0.saturating_add_signed(delta);
+                selection.start = MultiBufferOffset(start);
+                selection.end = MultiBufferOffset(start + text.len());
+                delta += text.len() as isize - old_length;
+            }
+
+            // The main selection follows its content into the neighboring
+            // slot of its group.
+            if let Some(main) = selections.iter().position(|s| s.id == newest_id) {
+                let group_start = (main / group) * group;
+                let group_length = (group_start + group).min(selections.len()) - group_start;
+                let rotated = if backward {
+                    (main - group_start + group_length - 1) % group_length
+                } else {
+                    (main - group_start + 1) % group_length
+                };
+                let new_main = group_start + rotated;
+                if new_main != main {
+                    selections[main].id = selections[new_main].id;
+                    selections[new_main].id = newest_id;
+                }
+            }
+
+            editor.transact(window, cx, |editor, window, cx| {
+                editor.edit(edits, cx);
+                editor.change_selections(Default::default(), window, cx, |s| {
+                    s.select(selections);
+                });
+            });
+        });
+    }
+
     /// Kakoune's `&`: align the selection cursors by inserting spaces before
     /// the first character of each selection.
     fn kakoune_align(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1807,6 +1907,42 @@ mod test {
         cx.simulate_keystrokes(")");
         cx.simulate_keystrokes("alt-,");
         cx.assert_state("a1 «bˇ»2 «cˇ»3", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_rotate_content(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // Contents rotate forward; differing lengths exercise the offset
+        // adjustments.
+        cx.set_state("«oneˇ» «twoˇ» «threeˇ»", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-)");
+        cx.assert_state("«threeˇ» «oneˇ» «twoˇ»", Mode::KakouneNormal);
+
+        // Rotating backward undoes it.
+        cx.simulate_keystrokes("alt-(");
+        cx.assert_state("«oneˇ» «twoˇ» «threeˇ»", Mode::KakouneNormal);
+
+        // A count rotates within groups of that size.
+        cx.set_state("«aˇ»1 «bˇ»2 «cˇ»3 «dˇ»4", Mode::KakouneNormal);
+        cx.simulate_keystrokes("2 alt-)");
+        cx.assert_state("«bˇ»1 «aˇ»2 «dˇ»3 «cˇ»4", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_rotate_content_main_follows(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // The main (newest) selection is the last one set; after rotating
+        // forward its content wraps to the first selection, so clearing the
+        // main selection drops the first one.
+        cx.set_state("«aˇ»1 «bˇ»2 «cˇ»3", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-)");
+        cx.assert_state("«cˇ»1 «aˇ»2 «bˇ»3", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-,");
+        cx.assert_state("c1 «aˇ»2 «bˇ»3", Mode::KakouneNormal);
     }
 
     #[gpui::test]
