@@ -175,11 +175,25 @@ pub enum Operator {
         replaced_char: Option<char>,
     },
     HelixSurroundDelete,
+    KakouneObject {
+        around: bool,
+        target: KakouneObjectTarget,
+    },
     HelixJump {
         behaviour: HelixJumpBehaviour,
         first_char: Option<char>,
         labels: Vec<HelixJumpLabel>,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KakouneObjectTarget {
+    /// Select the whole object.
+    Whole,
+    /// Select (or extend) from the cursor to the object's start.
+    ToStart { extend: bool },
+    /// Select (or extend) from the cursor to the object's end.
+    ToEnd { extend: bool },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1131,6 +1145,7 @@ impl Operator {
             Operator::HelixSurroundAdd => "helix_ms",
             Operator::HelixSurroundReplace { .. } => "helix_mr",
             Operator::HelixSurroundDelete => "helix_md",
+            Operator::KakouneObject { .. } => "kakoune_object",
         }
     }
 
@@ -1209,7 +1224,8 @@ impl Operator {
             | Operator::ToggleBlockComments
             | Operator::HelixMatch
             | Operator::HelixNext { .. }
-            | Operator::HelixPrevious { .. } => false,
+            | Operator::HelixPrevious { .. }
+            | Operator::KakouneObject { .. } => false,
             Operator::HelixSurroundAdd
             | Operator::HelixSurroundReplace { .. }
             | Operator::HelixSurroundDelete => true,
@@ -1240,6 +1256,7 @@ impl Operator {
             | Operator::Exchange
             | Operator::HelixNext { .. }
             | Operator::HelixPrevious { .. }
+            | Operator::KakouneObject { .. }
             | Operator::HelixSurroundAdd
             | Operator::HelixSurroundReplace { .. }
             | Operator::HelixSurroundDelete => true,
