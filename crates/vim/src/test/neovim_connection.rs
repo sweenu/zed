@@ -449,7 +449,7 @@ impl NeovimConnection {
             }
             Mode::Insert | Mode::Normal | Mode::Replace => selections
                 .push(Point::new(selection_row, selection_col)..Point::new(cursor_row, cursor_col)),
-            Mode::HelixNormal | Mode::HelixSelect => unreachable!(),
+            Mode::HelixNormal | Mode::HelixSelect | Mode::KakouneNormal => unreachable!(),
         }
 
         let ranges = encode_ranges(&text, &selections);
