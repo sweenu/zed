@@ -179,6 +179,9 @@ pub enum Operator {
         around: bool,
         target: KakouneObjectTarget,
     },
+    /// Kakoune's lock view mode: stays active so view keys can be repeated
+    /// until escape clears it.
+    KakouneView,
     HelixJump {
         behaviour: HelixJumpBehaviour,
         first_char: Option<char>,
@@ -1159,6 +1162,7 @@ impl Operator {
             Operator::HelixSurroundReplace { .. } => "helix_mr",
             Operator::HelixSurroundDelete => "helix_md",
             Operator::KakouneObject { .. } => "kakoune_object",
+            Operator::KakouneView => "kakoune_view",
         }
     }
 
@@ -1238,7 +1242,8 @@ impl Operator {
             | Operator::HelixMatch
             | Operator::HelixNext { .. }
             | Operator::HelixPrevious { .. }
-            | Operator::KakouneObject { .. } => false,
+            | Operator::KakouneObject { .. }
+            | Operator::KakouneView => false,
             Operator::HelixSurroundAdd
             | Operator::HelixSurroundReplace { .. }
             | Operator::HelixSurroundDelete => true,
@@ -1289,7 +1294,8 @@ impl Operator {
             | Operator::RecordRegister
             | Operator::ReplayRegister
             | Operator::HelixMatch
-            | Operator::HelixJump { .. } => false,
+            | Operator::HelixJump { .. }
+            | Operator::KakouneView => false,
         }
     }
 }
