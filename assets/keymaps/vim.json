@@ -577,6 +577,30 @@
       // Changes
       "i": "vim::HelixInsert",
       "a": "vim::HelixAppend",
+      "shift-i": "vim::InsertFirstNonWhitespace",
+      "shift-a": "vim::HelixInsertEndOfLine",
+      "o": "vim::InsertLineBelow",
+      "shift-o": "vim::InsertLineAbove",
+      "alt-o": "vim::KakouneAddLineBelow",
+      "alt-shift-o": "vim::KakouneAddLineAbove",
+      "d": "vim::HelixDelete",
+      "alt-d": "editor::Delete", // Delete selection, without yanking
+      "c": "vim::HelixSubstitute",
+      "alt-c": "vim::HelixSubstituteNoYank",
+      "y": "vim::HelixYank",
+      "p": "vim::HelixPaste",
+      "shift-p": ["vim::HelixPaste", { "before": true }],
+      "r": "vim::PushReplace",
+      "shift-r": "editor::Paste",
+      "alt-j": "vim::JoinLines",
+      ">": "vim::Indent",
+      "<": "vim::Outdent",
+      "u": "vim::Undo",
+      "shift-u": "editor::Redo",
+      "`": "vim::ConvertToLowerCase",
+      "~": "vim::ConvertToUpperCase",
+      "alt-`": "vim::ChangeCase",
+      ".": "vim::Repeat",
 
       // Movement: lowercase keys replace the selection with the moved-over
       // text, Shift-modified keys extend it instead.
@@ -624,6 +648,11 @@
       "x": "vim::KakouneExpandToLines",
       "alt-x": "vim::KakouneTrimToLines",
       "%": "editor::SelectAll",
+      "s": "vim::HelixSelectRegex",
+      "alt-s": ["editor::SplitSelectionIntoLines", { "keep_selections": true }],
+      ",": "vim::HelixKeepNewestSelection",
+      "shift-c": "vim::HelixDuplicateBelow",
+      "alt-shift-c": "vim::HelixDuplicateAbove",
 
       // Goto mode: `g` goes to the target, `G` extends the selection to it.
       "g h": ["vim::KakouneMotion", { "motion": "line_begin" }],
