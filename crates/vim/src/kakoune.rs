@@ -55,8 +55,29 @@ actions!(
         KakouneSelectBoundaryChars,
         /// Clears the main selection, keeping the others.
         KakouneClearMainSelection,
+        /// Unselects whitespace surrounding each selection, dropping
+        /// whitespace-only selections.
+        KakouneTrimWhitespace,
+        /// Merges contiguous selections together.
+        KakouneMergeContiguous,
+        /// Saves the current selections so they can be restored later.
+        KakouneSaveSelections,
+        /// Restores the previously saved selections.
+        KakouneRestoreSelections,
+        /// Aligns the selections by inserting spaces before their first
+        /// characters.
+        KakouneAlign,
     ]
 );
+
+/// Rotates which selection is the main one.
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
+#[action(namespace = vim)]
+#[serde(deny_unknown_fields)]
+pub struct KakouneRotateMain {
+    #[serde(default)]
+    backward: bool,
+}
 
 /// Moves the cursor in Kakoune mode, either replacing or extending the
 /// current selection.
@@ -252,6 +273,38 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
             vim.kakoune_clear_main_selection(window, cx);
         },
     );
+    Vim::action(editor, cx, |vim, _: &KakouneTrimWhitespace, window, cx| {
+        vim.kakoune_trim_whitespace(window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &KakouneMergeContiguous, window, cx| {
+        vim.kakoune_merge_contiguous(window, cx);
+    });
+    Vim::action(editor, cx, |vim, action: &KakouneRotateMain, window, cx| {
+        vim.kakoune_rotate_main(action.backward, window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &KakouneSaveSelections, _, cx| {
+        vim.update_editor(cx, |vim, editor, _| {
+            vim.kakoune_saved_selections = editor.selections.disjoint_anchors().to_vec();
+        });
+    });
+    Vim::action(
+        editor,
+        cx,
+        |vim, _: &KakouneRestoreSelections, window, cx| {
+            vim.update_editor(cx, |vim, editor, cx| {
+                if vim.kakoune_saved_selections.is_empty() {
+                    return;
+                }
+                let saved = vim.kakoune_saved_selections.clone();
+                editor.change_selections(Default::default(), window, cx, |s| {
+                    s.select_anchors(saved);
+                });
+            });
+        },
+    );
+    Vim::action(editor, cx, |vim, _: &KakouneAlign, window, cx| {
+        vim.kakoune_align(window, cx);
+    });
     Vim::action(editor, cx, |vim, _: &KakouneAddSelectionNext, window, cx| {
         vim.do_helix_select(Direction::Next, true, window, cx);
     });
@@ -940,6 +993,115 @@ impl Vim {
         });
     }
 
+    /// Kakoune's `_`: trim surrounding whitespace from each selection and
+    /// drop the ones that only contain whitespace.
+    fn kakoune_trim_whitespace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let buffer_snapshot = display_map.buffer_snapshot();
+            let mut new_ranges = Vec::new();
+            for selection in editor.selections.all::<MultiBufferOffset>(&display_map) {
+                let mut start = selection.start;
+                let mut end = selection.end;
+                for c in buffer_snapshot.chars_at(start) {
+                    if start >= end || !c.is_whitespace() {
+                        break;
+                    }
+                    start += c.len_utf8();
+                }
+                for c in buffer_snapshot.reversed_chars_at(end) {
+                    if end <= start || !c.is_whitespace() {
+                        break;
+                    }
+                    end -= c.len_utf8();
+                }
+                if start < end {
+                    new_ranges.push(start..end);
+                }
+            }
+            // Kakoune keeps the selections when none would remain.
+            if new_ranges.is_empty() {
+                return;
+            }
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges(new_ranges);
+            });
+        });
+    }
+
+    /// Kakoune's `alt-_`: merge contiguous selections together.
+    fn kakoune_merge_contiguous(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let mut new_ranges: Vec<Range<MultiBufferOffset>> = Vec::new();
+            for selection in editor.selections.all::<MultiBufferOffset>(&display_map) {
+                if let Some(last) = new_ranges.last_mut()
+                    && selection.start <= last.end
+                {
+                    last.end = last.end.max(selection.end);
+                } else {
+                    new_ranges.push(selection.start..selection.end);
+                }
+            }
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges(new_ranges);
+            });
+        });
+    }
+
+    /// Kakoune's `(`/`)`: rotate which selection is the main one. Zed's main
+    /// selection is the newest, so this swaps the newest id onto the next or
+    /// previous selection.
+    fn kakoune_rotate_main(&mut self, backward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let newest_id = editor.selections.newest_anchor().id;
+            let mut selections = editor.selections.all::<MultiBufferOffset>(&display_map);
+            if selections.len() <= 1 {
+                return;
+            }
+            let Some(current) = selections.iter().position(|s| s.id == newest_id) else {
+                return;
+            };
+            let target = if backward {
+                (current + selections.len() - 1) % selections.len()
+            } else {
+                (current + 1) % selections.len()
+            };
+            let target_id = selections[target].id;
+            selections[current].id = target_id;
+            selections[target].id = newest_id;
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select(selections);
+            });
+        });
+    }
+
+    /// Kakoune's `&`: align the selection cursors by inserting spaces before
+    /// the first character of each selection.
+    fn kakoune_align(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let selections = editor.selections.all::<Point>(&display_map);
+            let Some(max_column) = selections.iter().map(|s| s.head().column).max() else {
+                return;
+            };
+            let mut edits = Vec::new();
+            for selection in &selections {
+                let padding = (max_column - selection.head().column) as usize;
+                if padding > 0 {
+                    edits.push((selection.start..selection.start, " ".repeat(padding)));
+                }
+            }
+            if edits.is_empty() {
+                return;
+            }
+            editor.transact(window, cx, |editor, _, cx| {
+                editor.edit(edits, cx);
+            });
+        });
+    }
+
     /// Kakoune's `alt-,`: drop the main (newest) selection, keeping the rest.
     fn kakoune_clear_main_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.update_editor(cx, |_, editor, cx| {
@@ -1614,6 +1776,68 @@ mod test {
             «two
             three
             fˇ»our"},
+            Mode::KakouneNormal,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_trim_and_merge(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `_` unselects surrounding whitespace.
+        cx.set_state("a« one ˇ»b", Mode::KakouneNormal);
+        cx.simulate_keystrokes("_");
+        cx.assert_state("a «oneˇ» b", Mode::KakouneNormal);
+
+        // `alt-_` merges contiguous selections.
+        cx.set_state("«oneˇ»« twoˇ» three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-_");
+        cx.assert_state("«one twoˇ» three", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_rotate_and_clear_main(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // Three selections; the newest (main) is the last one set. Rotating
+        // forward wraps to the first, so clearing main then drops it.
+        cx.set_state("«aˇ»1 «bˇ»2 «cˇ»3", Mode::KakouneNormal);
+        cx.simulate_keystrokes(")");
+        cx.simulate_keystrokes("alt-,");
+        cx.assert_state("a1 «bˇ»2 «cˇ»3", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_save_restore_selections(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        cx.set_state("«oneˇ» two three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("shift-z");
+        cx.simulate_keystrokes("w w");
+        cx.assert_state("one «two ˇ»three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("z");
+        cx.assert_state("«oneˇ» two three", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_align(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        cx.set_state(
+            indoc::indoc! {"
+            a «=ˇ» 1
+            longer «=ˇ» 2"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("&");
+        cx.assert_state(
+            indoc::indoc! {"
+            a      «=ˇ» 1
+            longer «=ˇ» 2"},
             Mode::KakouneNormal,
         );
     }
