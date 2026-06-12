@@ -1095,7 +1095,20 @@ pub struct SearchState {
     /// Kakoune's `?` extends the selection to the next match instead of
     /// selecting it.
     pub kakoune_extend: bool,
+    /// A pending Kakoune selection transformation (`S`, `alt-k`, `alt-K`)
+    /// applied to the matches when the search prompt is submitted.
+    pub kakoune_regex_op: Option<KakouneRegexOp>,
     pub _dismiss_subscription: Option<gpui::Subscription>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KakouneRegexOp {
+    /// Split each selection on the regex matches.
+    Split,
+    /// Keep only the selections containing a match.
+    KeepMatching,
+    /// Drop the selections containing a match.
+    ClearMatching,
 }
 
 impl Operator {
