@@ -25,7 +25,7 @@ use crate::{
     Vim,
     motion::Motion,
     object::Object,
-    state::{KakouneObjectTarget, KakouneRegexOp, Mode, Operator, SearchState},
+    state::{KakouneHooksPhase, KakouneObjectTarget, KakouneRegexOp, Mode, Operator, SearchState},
 };
 
 actions!(
@@ -76,6 +76,11 @@ actions!(
         KakouneSelectionUndo,
         /// Redoes the last selection change.
         KakouneSelectionRedo,
+        /// Disables hooks (automatic behaviors like autoindent and format on
+        /// save) for the next command.
+        KakouneDisableHooks,
+        /// Saves the active item without formatting it.
+        KakouneSaveWithoutFormat,
     ]
 );
 
@@ -389,6 +394,19 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
         cx,
         |vim, action: &KakouneCombineSelections, window, cx| {
             vim.kakoune_combine_selections(action.kind, action.save, window, cx);
+        },
+    );
+    Vim::action(editor, cx, |vim, _: &KakouneDisableHooks, _, cx| {
+        vim.kakoune_hooks_disabled = Some(KakouneHooksPhase::Armed);
+        vim.status_label = Some("no hooks".into());
+        cx.notify();
+    });
+    Vim::action(
+        editor,
+        cx,
+        |vim, _: &KakouneSaveWithoutFormat, window, cx| {
+            vim.kakoune_hooks_disabled = None;
+            window.dispatch_action(workspace::SaveWithoutFormat.boxed_clone(), cx);
         },
     );
     Vim::action(editor, cx, |vim, _: &KakouneSelectionUndo, window, cx| {
@@ -2567,6 +2585,52 @@ mod test {
         cx.assert_state("one «two ˇ»three", Mode::KakouneNormal);
         cx.simulate_keystrokes("alt-shift-u");
         cx.assert_state("one «two ˇ»three", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_disable_hooks(cx: &mut gpui::TestAppContext) {
+        use crate::state::KakouneHooksPhase;
+
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        let hooks_state = |cx: &mut VimTestContext| {
+            cx.update_editor(|editor, _, cx| {
+                let vim = editor.addon::<crate::VimAddon>().unwrap().entity.read(cx);
+                (vim.kakoune_hooks_disabled, vim.should_autoindent())
+            })
+        };
+
+        // `\` arms the suppression for the next command only.
+        cx.set_state("ˇone two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("\\");
+        assert_eq!(
+            hooks_state(&mut cx),
+            (Some(KakouneHooksPhase::Armed), false)
+        );
+        cx.simulate_keystrokes("w");
+        assert_eq!(
+            hooks_state(&mut cx),
+            (Some(KakouneHooksPhase::Active), false)
+        );
+        cx.simulate_keystrokes("w");
+        assert_eq!(hooks_state(&mut cx), (None, true));
+
+        // `\i` keeps hooks disabled for the whole insert session.
+        cx.set_state("ˇone two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("\\ i");
+        assert_eq!(
+            hooks_state(&mut cx),
+            (Some(KakouneHooksPhase::Active), false)
+        );
+        cx.simulate_keystrokes("x y z");
+        assert_eq!(
+            hooks_state(&mut cx),
+            (Some(KakouneHooksPhase::Active), false)
+        );
+        cx.simulate_keystrokes("escape");
+        cx.assert_state("xyzˇone two", Mode::KakouneNormal);
+        assert_eq!(hooks_state(&mut cx), (None, true));
     }
 
     #[gpui::test]
