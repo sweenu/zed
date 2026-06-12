@@ -188,6 +188,11 @@ pub struct SettingsContent {
     /// Default: false
     pub helix_mode: Option<bool>,
 
+    /// Whether or not to enable Kakoune mode.
+    ///
+    /// Default: false
+    pub kakoune_mode: Option<bool>,
+
     /// Determines when the mouse cursor should be hidden in response to
     /// keyboard input. Applies globally across all input surfaces (editors,
     /// terminals, palettes, etc.).

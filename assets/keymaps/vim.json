@@ -569,6 +569,15 @@
     },
   },
   {
+    "context": "VimControl && vim_mode == kakoune_normal && !menu && !BufferSearchBar",
+    "bindings": {
+      "escape": "editor::Cancel",
+      "ctrl-[": "editor::Cancel",
+      "i": "vim::HelixInsert",
+      "a": "vim::HelixAppend",
+    },
+  },
+  {
     "context": "vim_mode == insert && !(showing_code_actions || showing_completions)",
     "bindings": {
       "ctrl-p": "editor::ShowWordCompletions",
