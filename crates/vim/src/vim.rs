@@ -87,6 +87,8 @@ struct PushObject {
 struct PushFindForward {
     before: bool,
     multiline: bool,
+    #[serde(default)]
+    extend: bool,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
@@ -95,6 +97,8 @@ struct PushFindForward {
 struct PushFindBackward {
     after: bool,
     multiline: bool,
+    #[serde(default)]
+    extend: bool,
 }
 
 #[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
@@ -775,6 +779,7 @@ impl Vim {
                     Operator::FindForward {
                         before: action.before,
                         multiline: action.multiline,
+                        extend: action.extend,
                     },
                     window,
                     cx,
@@ -786,6 +791,7 @@ impl Vim {
                     Operator::FindBackward {
                         after: action.after,
                         multiline: action.multiline,
+                        extend: action.extend,
                     },
                     window,
                     cx,
@@ -2114,7 +2120,11 @@ impl Vim {
         }
 
         match self.active_operator() {
-            Some(Operator::FindForward { before, multiline }) => {
+            Some(Operator::FindForward {
+                before,
+                multiline,
+                extend: _,
+            }) => {
                 let find = Motion::FindForward {
                     before,
                     char: text.chars().next().unwrap(),
@@ -2128,7 +2138,11 @@ impl Vim {
                 Vim::globals(cx).last_find = Some(find.clone());
                 self.motion(find, window, cx)
             }
-            Some(Operator::FindBackward { after, multiline }) => {
+            Some(Operator::FindBackward {
+                after,
+                multiline,
+                extend: _,
+            }) => {
                 let find = Motion::FindBackward {
                     after,
                     char: text.chars().next().unwrap(),

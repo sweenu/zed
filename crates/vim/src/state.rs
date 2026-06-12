@@ -106,10 +106,16 @@ pub enum Operator {
     FindForward {
         before: bool,
         multiline: bool,
+        /// Extend the current selection instead of replacing it (used by
+        /// Kakoune mode's `F`/`T`).
+        extend: bool,
     },
     FindBackward {
         after: bool,
         multiline: bool,
+        /// Extend the current selection instead of replacing it (used by
+        /// Kakoune mode's `alt-F`/`alt-T`).
+        extend: bool,
     },
     Sneak {
         first_char: Option<char>,
