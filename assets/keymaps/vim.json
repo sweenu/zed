@@ -626,8 +626,10 @@
       "alt-shift-f": ["vim::PushFindBackward", { "after": false, "multiline": true, "extend": true }],
       "alt-shift-t": ["vim::PushFindBackward", { "after": true, "multiline": true, "extend": true }],
       "alt-.": "vim::RepeatFind",
-      "m": ["vim::KakouneMotion", { "motion": "matching" }],
-      "shift-m": ["vim::KakouneMotion", { "motion": "matching", "extend": true }],
+      "m": "vim::KakouneMatching",
+      "shift-m": ["vim::KakouneMatching", { "extend": true }],
+      "alt-m": ["vim::KakouneMatching", { "backward": true }],
+      "alt-shift-m": ["vim::KakouneMatching", { "backward": true, "extend": true }],
 
       // Selection manipulation
       ";": "vim::HelixCollapseSelection",
@@ -647,7 +649,43 @@
       "shift-c": "vim::HelixDuplicateBelow",
       "alt-shift-c": "vim::HelixDuplicateAbove",
 
-      // Goto mode: `g` goes to the target, `G` extends the selection to it.
+      // Search
+      "/": ["vim::Search", { "backwards": false }],
+      "alt-/": ["vim::Search", { "backwards": true }],
+      "?": ["vim::Search", { "backwards": false, "extend": true }],
+      "alt-?": ["vim::Search", { "backwards": true, "extend": true }],
+      "n": "vim::HelixSelectNext",
+      "alt-n": "vim::HelixSelectPrevious",
+      "shift-n": "vim::KakouneAddSelectionNext",
+      "alt-shift-n": "vim::KakouneAddSelectionPrevious",
+      "*": "buffer_search::UseSelectionForFind",
+
+      // Macros — like Helix, Kakoune swaps Vim's q/Q: Q records, q replays
+      "q": "vim::ReplayLastRecording",
+      "shift-q": "vim::ToggleRecord",
+
+      // Registers
+      "\"": "vim::PushRegister",
+
+      // Object selection
+      "alt-a": ["vim::PushKakouneObject", { "around": true }],
+      "alt-i": ["vim::PushKakouneObject", { "around": false }],
+      "[": ["vim::PushKakouneObject", { "around": true, "to": "start" }],
+      "]": ["vim::PushKakouneObject", { "around": true, "to": "end" }],
+      "{": ["vim::PushKakouneObject", { "around": true, "to": "start", "extend": true }],
+      "}": ["vim::PushKakouneObject", { "around": true, "to": "end", "extend": true }],
+      "alt-[": ["vim::PushKakouneObject", { "around": false, "to": "start" }],
+      "alt-]": ["vim::PushKakouneObject", { "around": false, "to": "end" }],
+      "alt-{": ["vim::PushKakouneObject", { "around": false, "to": "start", "extend": true }],
+      "alt-}": ["vim::PushKakouneObject", { "around": false, "to": "end", "extend": true }],
+    },
+  },
+  {
+    // Goto mode: `g` goes to the target, `G` extends the selection to it.
+    // The chords only apply without a count so that a counted `g` can fire
+    // immediately (see below).
+    "context": "VimControl && vim_mode == kakoune_normal && !VimCount && !menu && !BufferSearchBar",
+    "bindings": {
       "g h": ["vim::KakouneMotion", { "motion": "line_begin" }],
       "g l": ["vim::KakouneMotion", { "motion": "line_end" }],
       "g i": ["vim::KakouneMotion", { "motion": "first_non_blank" }],
@@ -671,28 +709,6 @@
       "shift-g t": ["vim::KakouneMotion", { "motion": "window_top", "extend": true }],
       "shift-g c": ["vim::KakouneMotion", { "motion": "window_middle", "extend": true }],
       "shift-g b": ["vim::KakouneMotion", { "motion": "window_bottom", "extend": true }],
-
-      // Search
-      "/": ["vim::Search", { "backwards": false }],
-      "alt-/": ["vim::Search", { "backwards": true }],
-      "?": ["vim::Search", { "backwards": false, "extend": true }],
-      "alt-?": ["vim::Search", { "backwards": true, "extend": true }],
-      "n": "vim::HelixSelectNext",
-      "alt-n": "vim::HelixSelectPrevious",
-      "shift-n": "vim::KakouneAddSelectionNext",
-      "alt-shift-n": "vim::KakouneAddSelectionPrevious",
-
-      // Object selection
-      "alt-a": ["vim::PushKakouneObject", { "around": true }],
-      "alt-i": ["vim::PushKakouneObject", { "around": false }],
-      "[": ["vim::PushKakouneObject", { "around": true, "to": "start" }],
-      "]": ["vim::PushKakouneObject", { "around": true, "to": "end" }],
-      "{": ["vim::PushKakouneObject", { "around": true, "to": "start", "extend": true }],
-      "}": ["vim::PushKakouneObject", { "around": true, "to": "end", "extend": true }],
-      "alt-[": ["vim::PushKakouneObject", { "around": false, "to": "start" }],
-      "alt-]": ["vim::PushKakouneObject", { "around": false, "to": "end" }],
-      "alt-{": ["vim::PushKakouneObject", { "around": false, "to": "start", "extend": true }],
-      "alt-}": ["vim::PushKakouneObject", { "around": false, "to": "end", "extend": true }],
     },
   },
   {
@@ -1391,6 +1407,17 @@
     "bindings": {
       "tab": "skill_creator::FocusNextField",
       "shift-tab": "skill_creator::FocusPreviousField",
+    },
+  },
+  {
+    // With a count pending, `g` and `G` go directly to the given line
+    // instead of opening the goto menu. This section must come after every
+    // section binding `g`-prefixed chords in a VimControl context, so that
+    // the bare `g` here outranks them and fires without waiting for a chord.
+    "context": "vim_mode == kakoune_normal && VimCount",
+    "bindings": {
+      "g": ["vim::KakouneMotion", { "motion": "start_of_document" }],
+      "shift-g": ["vim::KakouneMotion", { "motion": "start_of_document", "extend": true }],
     },
   },
 ]
