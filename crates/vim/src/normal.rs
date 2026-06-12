@@ -19,7 +19,7 @@ use crate::{
     indent::IndentDirection,
     motion::{self, Motion, first_non_whitespace, next_line_end, right},
     object::Object,
-    state::{Mark, Mode, Operator},
+    state::{KakouneObjectTarget, Mark, Mode, Operator},
     surrounds::SurroundsType,
 };
 use collections::BTreeSet;
@@ -571,6 +571,17 @@ impl Vim {
             Some(Operator::HelixPrevious { around }) => {
                 self.select_previous_object(object, around, window, cx);
             }
+            Some(Operator::KakouneObject { around, target }) => match target {
+                KakouneObjectTarget::Whole => {
+                    self.select_current_object(object, around, window, cx)
+                }
+                KakouneObjectTarget::ToStart { extend } => {
+                    self.kakoune_select_object_bound(object, around, false, extend, window, cx)
+                }
+                KakouneObjectTarget::ToEnd { extend } => {
+                    self.kakoune_select_object_bound(object, around, true, extend, window, cx)
+                }
+            },
             Some(Operator::DeleteSurrounds) => {
                 waiting_operator = Some(Operator::DeleteSurrounds);
             }
