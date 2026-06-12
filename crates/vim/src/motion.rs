@@ -710,7 +710,7 @@ impl Vim {
                         return;
                     }
                 }
-                Mode::HelixNormal | Mode::HelixSelect => {}
+                Mode::HelixNormal | Mode::HelixSelect | Mode::KakouneNormal => {}
             }
         }
 
@@ -746,6 +746,7 @@ impl Vim {
 
             Mode::HelixNormal => self.helix_normal_motion(motion, count, window, cx),
             Mode::HelixSelect => self.helix_select_motion(motion, count, window, cx),
+            Mode::KakouneNormal => self.kakoune_motion(motion, count, window, cx),
         }
         self.clear_operator(window, cx);
         if let Some(operator) = waiting_operator {
