@@ -675,6 +675,7 @@
       "alt-shift-z -": ["vim::KakouneCombineSelections", { "kind": "select_shortest", "save": true }],
       "alt-u": "vim::KakouneSelectionUndo",
       "alt-shift-u": "vim::KakouneSelectionRedo",
+      "\\": "vim::KakouneDisableHooks",
       "&": "vim::KakouneAlign",
 
       // View mode: `v` applies one view command, `V` locks the mode until
@@ -747,6 +748,13 @@
       "shift-g t": ["vim::KakouneMotion", { "motion": "window_top", "extend": true }],
       "shift-g c": ["vim::KakouneMotion", { "motion": "window_middle", "extend": true }],
       "shift-g b": ["vim::KakouneMotion", { "motion": "window_bottom", "extend": true }],
+    },
+  },
+  {
+    // While kakoune's `\` is active, saving skips the formatter.
+    "context": "kakoune_hooks_disabled",
+    "bindings": {
+      "ctrl-s": "vim::KakouneSaveWithoutFormat",
     },
   },
   {
