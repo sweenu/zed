@@ -69,6 +69,9 @@ actions!(
         /// Aligns the selections by inserting spaces before their first
         /// characters.
         KakouneAlign,
+        /// Copies the indentation of the main selection (or the count one) to
+        /// all selected lines.
+        KakouneCopyIndent,
         /// Enters the lock view mode, where view keys can be repeated until
         /// escape.
         PushKakouneView,
@@ -388,6 +391,9 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     );
     Vim::action(editor, cx, |vim, _: &KakouneAlign, window, cx| {
         vim.kakoune_align(window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &KakouneCopyIndent, window, cx| {
+        vim.kakoune_copy_indent(window, cx);
     });
     Vim::action(editor, cx, |vim, _: &PushKakouneView, window, cx| {
         vim.clear_operator(window, cx);
@@ -1804,6 +1810,71 @@ impl Vim {
         self.kakoune_restoring_selections = false;
     }
 
+    /// Kakoune's `alt-&`: copy the indentation of the main selection's first
+    /// line (or the count-th selection's, one-based) to every selected line.
+    fn kakoune_copy_indent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let count = Vim::take_count(cx);
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let buffer_snapshot = display_map.buffer_snapshot();
+            let selections = editor.selections.all::<Point>(&display_map);
+
+            let mut rows = Vec::new();
+            for selection in &selections {
+                let end_row = if selection.end.column == 0 && selection.end.row > selection.start.row
+                {
+                    selection.end.row - 1
+                } else {
+                    selection.end.row
+                };
+                rows.extend(selection.start.row..=end_row);
+            }
+            rows.sort_unstable();
+            rows.dedup();
+
+            let reference = match count {
+                Some(count) if count >= 1 && count <= selections.len() => count - 1,
+                Some(_) => return,
+                None => {
+                    let newest_id = editor.selections.newest_anchor().id;
+                    selections
+                        .iter()
+                        .position(|selection| selection.id == newest_id)
+                        .unwrap_or(0)
+                }
+            };
+            let reference_row = selections[reference].start.row;
+
+            let leading_blanks = |row: u32| {
+                buffer_snapshot
+                    .chars_at(Point::new(row, 0))
+                    .take_while(|c| *c == ' ' || *c == '\t')
+                    .collect::<String>()
+            };
+            let indent = leading_blanks(reference_row);
+
+            let mut edits = Vec::new();
+            for &row in &rows {
+                if row == reference_row {
+                    continue;
+                }
+                let current = leading_blanks(row);
+                if current != indent {
+                    edits.push((
+                        Point::new(row, 0)..Point::new(row, current.len() as u32),
+                        indent.clone(),
+                    ));
+                }
+            }
+            if edits.is_empty() {
+                return;
+            }
+            editor.transact(window, cx, |editor, _, cx| {
+                editor.edit(edits, cx);
+            });
+        });
+    }
+
     /// Kakoune's `alt-,`: drop the main (newest) selection, keeping the rest.
     fn kakoune_clear_main_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.update_editor(cx, |_, editor, cx| {
@@ -2992,6 +3063,24 @@ mod test {
         cx.set_state("ˇone two", Mode::KakouneNormal);
         cx.simulate_keystrokes("alt-i space");
         cx.assert_state("ˇone two", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_copy_indent(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // The main selection is the newest (the last one in document order
+        // after set_state); its indentation is copied to the other lines.
+        // indoc would strip the indentation under test, so plain strings.
+        cx.set_state("ˇone\n    ˇtwo\n  ˇthree", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-&");
+        cx.assert_state("  ˇone\n  ˇtwo\n  ˇthree", Mode::KakouneNormal);
+
+        // A count picks the reference selection (one-based).
+        cx.set_state("ˇone\n    ˇtwo\n  ˇthree", Mode::KakouneNormal);
+        cx.simulate_keystrokes("2 alt-&");
+        cx.assert_state("    ˇone\n    ˇtwo\n    ˇthree", Mode::KakouneNormal);
     }
 
     #[gpui::test]
