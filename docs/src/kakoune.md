@@ -19,7 +19,8 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 - WORD variants on `alt-w`, `alt-b`, `alt-e` (extend with `alt-W`, `alt-B`, `alt-E`).
 - Goto mode (`g` plus a key), where `G` extends the selection to the target, and count-prefixed `g`/`G` to go to a line.
 - Matching pairs: `m`/`M` select or extend to the next enclosed sequence, `alt-m`/`alt-M` to the previous one.
-- Selection manipulation: `;`, `alt-;`, `alt-:`, `x`, `alt-x`, `%`, `s`, `S`, `alt-s`, `alt-S`, `,`, `alt-,`, `alt-k`, `alt-K`, `C`, `alt-C`, `_`, `alt-_`, `(`, `)`, `&`, and content rotation with `alt-(`/`alt-)` (grouped by a count).
+- Selection manipulation: `;`, `alt-;`, `alt-:`, `x`, `alt-x`, `%`, `s`, `S`, `alt-s`, `alt-S`, `,`, `alt-,`, `alt-k`, `alt-K`, `C`, `alt-C`, `_`, `alt-_`, `(`, `)`, and content rotation with `alt-(`/`alt-)` (grouped by a count).
+- Alignment: `&` aligns selections in per-line column groups, and `alt-&` copies the main selection's indentation to all selected lines.
 - Selection marks: `Z` saves the selections, `z` restores them, and the `alt-z`/`alt-Z` menus combine the saved and current selections (append, union, intersection, leftmost/rightmost cursor, longest/shortest).
 - Selection history: `alt-u` undoes the last selection change, `alt-U` redoes it.
 - Object selection: `alt-i`/`alt-a` followed by an object key, and `[`/`]`/`{`/`}` to select or extend to an object's start or end.
@@ -32,7 +33,7 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 ## Known deviations
 
 - Registers, macros, and marks use Vim's machinery rather than Kakoune's register semantics; `Z`/`z` use a single slot instead of the `^` register.
-- `alt-&` (copy indent) and the `aligntab` behavior of `&` are not implemented.
+- Instead of Kakoune's `aligntab` option, `&` pads with tabs when the buffer's language uses `hard_tabs`.
 - The custom (`c`) text object is not implemented.
 - Shell-driven commands (`|`, `!`, `$`, `@`) are not implemented yet.
 - Like Kakoune, `space` ships without default bindings; define your own user-mode style chords in your keymap with the `vim_mode == kakoune_normal` context.
