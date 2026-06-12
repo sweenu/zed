@@ -189,6 +189,17 @@ pub enum Operator {
     },
 }
 
+/// Kakoune's `\` prefix: hooks (automatic behaviors like autoindent and
+/// format on save) are disabled for the duration of the next command,
+/// including any mode it moves to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KakouneHooksPhase {
+    /// `\` was pressed; the next command activates the suppression.
+    Armed,
+    /// The suppression applies to the currently running command.
+    Active,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum KakouneObjectTarget {
     /// Select the whole object.
