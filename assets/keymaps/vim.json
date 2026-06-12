@@ -668,6 +668,14 @@
       "z": "vim::KakouneRestoreSelections",
       "&": "vim::KakouneAlign",
 
+      // View mode
+      "v v": "editor::ScrollCursorCenter",
+      "v c": "editor::ScrollCursorCenter",
+      "v t": "editor::ScrollCursorTop",
+      "v b": "editor::ScrollCursorBottom",
+      "v j": "vim::LineDown",
+      "v k": "vim::LineUp",
+
       // Search
       "/": ["vim::Search", { "backwards": false }],
       "alt-/": ["vim::Search", { "backwards": true }],
