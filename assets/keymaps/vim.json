@@ -637,8 +637,13 @@
       "alt-x": "vim::KakouneTrimToLines",
       "%": "editor::SelectAll",
       "s": "vim::HelixSelectRegex",
+      "shift-s": "vim::KakouneSplitSelections",
       "alt-s": ["editor::SplitSelectionIntoLines", { "keep_selections": true }],
+      "alt-shift-s": "vim::KakouneSelectBoundaryChars",
       ",": "vim::HelixKeepNewestSelection",
+      "alt-,": "vim::KakouneClearMainSelection",
+      "alt-k": "vim::KakouneKeepMatching",
+      "alt-shift-k": "vim::KakouneClearMatching",
       "shift-c": "vim::HelixDuplicateBelow",
       "alt-shift-c": "vim::HelixDuplicateAbove",
 
