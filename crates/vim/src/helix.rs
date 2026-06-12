@@ -717,6 +717,7 @@ impl Vim {
                         prior_mode: self.mode,
                         helix_select: true,
                         kakoune_extend: false,
+                        kakoune_regex_op: None,
                         _dismiss_subscription: None,
                     }
                 });
