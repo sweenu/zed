@@ -6,7 +6,7 @@ use gpui::actions;
 use gpui::{Context, Window};
 use language::SelectionGoal;
 use settings::Settings;
-use vim_mode_setting::HelixModeSetting;
+use vim_mode_setting::{HelixModeSetting, KakouneModeSetting};
 
 #[derive(PartialEq, Eq)]
 pub(crate) enum IndentDirection {
@@ -39,7 +39,7 @@ pub(crate) fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
                 for _ in 0..count {
                     editor.indent(&Default::default(), window, cx);
                 }
-                if !HelixModeSetting::get_global(cx).0 {
+                if !HelixModeSetting::get_global(cx).0 && !KakouneModeSetting::get_global(cx).0 {
                     vim.restore_selection_cursors(editor, window, cx, original_positions);
                 }
             });
@@ -60,7 +60,7 @@ pub(crate) fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
                 for _ in 0..count {
                     editor.outdent(&Default::default(), window, cx);
                 }
-                if !HelixModeSetting::get_global(cx).0 {
+                if !HelixModeSetting::get_global(cx).0 && !KakouneModeSetting::get_global(cx).0 {
                     vim.restore_selection_cursors(editor, window, cx, original_positions);
                 }
             });
