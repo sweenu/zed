@@ -1616,11 +1616,34 @@ impl Vim {
                     };
                     let mut edits = Vec::new();
                     for &index in &group {
-                        let padding = (max_column - cursor_column(index)) as usize;
-                        if padding > 0 {
-                            let start = selections[index].start;
-                            edits.push((start..start, " ".repeat(padding)));
+                        let padding = max_column - cursor_column(index);
+                        if padding == 0 {
+                            continue;
                         }
+                        let start = selections[index].start;
+                        // Like kakoune's aligntab option, buffers indented
+                        // with hard tabs are padded with tabs up to the last
+                        // tabstop, then spaces.
+                        let settings = display_map
+                            .buffer_snapshot()
+                            .language_settings_at(start, cx);
+                        let text = if settings.hard_tabs {
+                            let tab_size = settings.tab_size.get();
+                            let insert_column =
+                                start.to_display_point(&display_map).column();
+                            let target_column = insert_column + padding;
+                            let tab_column = insert_column - (insert_column % tab_size);
+                            let tabs = (target_column - tab_column) / tab_size;
+                            let spaces = if tabs > 0 {
+                                target_column - (tab_column + tabs * tab_size)
+                            } else {
+                                target_column - insert_column
+                            };
+                            "\t".repeat(tabs as usize) + &" ".repeat(spaces as usize)
+                        } else {
+                            " ".repeat(padding as usize)
+                        };
+                        edits.push((start..start, text));
                     }
                     if !edits.is_empty() {
                         editor.edit(edits, cx);
@@ -2989,6 +3012,28 @@ mod test {
             thˇree"},
             Mode::KakouneNormal,
         );
+    }
+
+    #[gpui::test]
+    async fn test_align_with_hard_tabs(cx: &mut gpui::TestAppContext) {
+        use gpui::UpdateGlobal;
+
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+        cx.cx.update(|_, cx| {
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |s| {
+                    s.project.all_languages.defaults.hard_tabs = Some(true);
+                    s.project.all_languages.defaults.tab_size = std::num::NonZeroU32::new(4);
+                });
+            })
+        });
+
+        // The first line's `=` sits at column 2 and must reach column 8: one
+        // tab jumps from column 2 to the tabstop at 4, another to 8.
+        cx.set_state("a «=ˇ» 1\nlonger! «=ˇ» 2", Mode::KakouneNormal);
+        cx.simulate_keystrokes("&");
+        cx.assert_state("a \t\t«=ˇ» 1\nlonger! «=ˇ» 2", Mode::KakouneNormal);
     }
 
     #[gpui::test]
