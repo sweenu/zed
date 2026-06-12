@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use search::{BufferSearchBar, SearchOptions};
 use serde::Deserialize;
 use settings::Settings;
-use text::{Bias, SelectionGoal};
+use text::{Bias, LineEnding, SelectionGoal};
 use workspace::searchable::{Direction, FilteredSearchRange};
 
 use crate::{
@@ -87,6 +87,28 @@ pub struct KakouneRotateMain {
 pub struct KakouneRotateContent {
     #[serde(default)]
     backward: bool,
+}
+
+/// Pastes every yanked selection at each selection and selects each pasted
+/// string (Kakoune's `alt-p`/`alt-P`/`alt-R`).
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
+#[action(namespace = vim)]
+#[serde(deny_unknown_fields)]
+pub struct KakounePasteAll {
+    #[serde(default)]
+    position: PasteAllPosition,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum PasteAllPosition {
+    /// Paste after the end of each selection.
+    #[default]
+    After,
+    /// Paste before the start of each selection.
+    Before,
+    /// Replace each selection with the pasted text.
+    Replace,
 }
 
 /// Moves the cursor in Kakoune mode, either replacing or extending the
@@ -299,6 +321,9 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
             vim.kakoune_rotate_content(action.backward, window, cx);
         },
     );
+    Vim::action(editor, cx, |vim, action: &KakounePasteAll, window, cx| {
+        vim.kakoune_paste_all(action.position, window, cx);
+    });
     Vim::action(editor, cx, |vim, _: &KakouneSaveSelections, _, cx| {
         vim.update_editor(cx, |vim, editor, _| {
             vim.kakoune_saved_selections = editor.selections.disjoint_anchors().to_vec();
@@ -1177,6 +1202,154 @@ impl Vim {
         });
     }
 
+    /// Kakoune's `alt-p`/`alt-P`/`alt-R`: paste every yanked selection at
+    /// each selection (after it, before it, or replacing it) and select each
+    /// pasted string.
+    fn kakoune_paste_all(
+        &mut self,
+        position: PasteAllPosition,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        Vim::take_count(cx);
+        Vim::take_forced_motion(cx);
+        self.update_editor(cx, |vim, editor, cx| {
+            if editor.read_only(cx) {
+                return;
+            }
+
+            editor.transact(window, cx, |editor, window, cx| {
+                editor.set_clip_at_line_ends(false, cx);
+
+                let selected_register = vim.selected_register.take();
+                let Some(register) = Vim::update_globals(cx, |globals, cx| {
+                    globals.read_register(selected_register, Some(editor), cx)
+                })
+                .filter(|register| !register.text.is_empty()) else {
+                    return;
+                };
+
+                // The register text holds one piece per yanked selection,
+                // joined by newlines unless a piece is an entire line.
+                let mut pieces: Vec<String> = Vec::new();
+                if let Some(clipboard_selections) = register
+                    .clipboard_selections
+                    .as_ref()
+                    .filter(|selections| selections.len() > 1)
+                {
+                    let mut start = 0;
+                    for clipboard_selection in clipboard_selections {
+                        let end = start + clipboard_selection.len;
+                        let Some(piece) = register.text.get(start..end) else {
+                            break;
+                        };
+                        pieces.push(piece.to_string());
+                        start = if clipboard_selection.is_entire_line {
+                            end
+                        } else {
+                            end + 1
+                        };
+                    }
+                } else {
+                    pieces.push(register.text.to_string());
+                }
+                pieces.retain(|piece| !piece.is_empty());
+                for piece in &mut pieces {
+                    LineEnding::normalize(piece);
+                }
+                if pieces.is_empty() {
+                    return;
+                }
+                let linewise = pieces.iter().all(|piece| piece.ends_with('\n'));
+                let all = pieces.concat();
+
+                let display_map = editor.display_snapshot(cx);
+                let current_selections = editor.selections.all_adjusted_display(&display_map);
+
+                let mut edits = Vec::new();
+                let mut paste_starts = Vec::new();
+                for selection in &current_selections {
+                    if position == PasteAllPosition::Replace {
+                        // Kakoune selections always cover at least one
+                        // character, so an empty selection replaces the
+                        // character under the cursor.
+                        let end = if selection.start == selection.end {
+                            movement::right(&display_map, selection.end)
+                        } else {
+                            selection.end
+                        };
+                        let range = selection.start.to_point(&display_map)
+                            ..end.to_point(&display_map);
+                        paste_starts.push((
+                            display_map.buffer_snapshot().anchor_before(range.start),
+                            0,
+                        ));
+                        edits.push((range, all.clone()));
+                        continue;
+                    }
+
+                    let before = position == PasteAllPosition::Before;
+                    let mut leading_newline = false;
+                    let display_point = if linewise {
+                        if before {
+                            movement::line_beginning(&display_map, selection.start, false)
+                        } else if selection.start == selection.end {
+                            let line_end =
+                                movement::line_end(&display_map, selection.end, false);
+                            let next_line = movement::right(&display_map, line_end);
+                            // On the buffer's last line there is no following
+                            // line to paste at, so a newline is inserted first.
+                            leading_newline = next_line == line_end;
+                            next_line
+                        } else {
+                            selection.end
+                        }
+                    } else if before {
+                        selection.start
+                    } else if selection.start == selection.end {
+                        // The cursor sits on a character, so pasting after
+                        // means after that character — except on an empty
+                        // line, where there is no character.
+                        let right = movement::right(&display_map, selection.end);
+                        if right.row() != selection.end.row() && selection.end.column() == 0 {
+                            selection.end
+                        } else {
+                            right
+                        }
+                    } else {
+                        selection.end
+                    };
+                    let point = display_point.to_point(&display_map);
+                    let text = if leading_newline {
+                        format!("\n{all}")
+                    } else {
+                        all.clone()
+                    };
+                    paste_starts.push((
+                        display_map.buffer_snapshot().anchor_before(point),
+                        leading_newline as usize,
+                    ));
+                    edits.push((point..point, text));
+                }
+
+                editor.edit(edits, cx);
+
+                let snapshot = editor.buffer().read(cx).snapshot(cx);
+                let mut new_ranges = Vec::new();
+                for (paste_start, leading) in paste_starts {
+                    let mut offset = paste_start.to_offset(&snapshot) + leading;
+                    for piece in &pieces {
+                        new_ranges.push(offset..offset + piece.len());
+                        offset += piece.len();
+                    }
+                }
+                editor.change_selections(Default::default(), window, cx, |s| {
+                    s.select_ranges(new_ranges);
+                });
+            });
+        });
+    }
+
     /// Kakoune's `&`: align the selection cursors by inserting spaces before
     /// the first character of each selection.
     fn kakoune_align(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1943,6 +2116,72 @@ mod test {
         cx.assert_state("«cˇ»1 «aˇ»2 «bˇ»3", Mode::KakouneNormal);
         cx.simulate_keystrokes("alt-,");
         cx.assert_state("c1 «aˇ»2 «bˇ»3", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_paste_all(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // Yank two selections, collapse to a cursor, then paste all pieces
+        // after the cursor's character, selecting each piece.
+        cx.set_state("«oneˇ» «twoˇ» rest", Mode::KakouneNormal);
+        cx.simulate_keystrokes("y");
+        cx.set_state("one two ˇrest", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-p");
+        cx.assert_state("one two r«oneˇ»«twoˇ»est", Mode::KakouneNormal);
+
+        // `alt-P` pastes all pieces before the selection.
+        cx.set_state("one two ˇrest", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-p");
+        cx.assert_state("one two «oneˇ»«twoˇ»rest", Mode::KakouneNormal);
+
+        // `alt-R` replaces each selection with all pieces.
+        cx.set_state("one two «restˇ»", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-r");
+        cx.assert_state("one two «oneˇ»«twoˇ»", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_paste_all_linewise(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // Yank two full lines; pasting all inserts both below the cursor's
+        // line.
+        cx.set_state(
+            indoc::indoc! {"
+            oˇne
+            two
+            three"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("x shift-j x y");
+        cx.assert_state(
+            indoc::indoc! {"
+            «one
+            two
+            ˇ»three"},
+            Mode::KakouneNormal,
+        );
+        cx.set_state(
+            indoc::indoc! {"
+            one
+            two
+            thˇree"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("alt-p");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            two
+            three
+            «one
+            two
+            ˇ»"},
+            Mode::KakouneNormal,
+        );
     }
 
     #[gpui::test]
