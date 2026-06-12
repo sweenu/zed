@@ -1439,6 +1439,9 @@ impl Vim {
                 };
                 selection.start = Point::new(selection.start.row, 0);
                 selection.end = Point::new(last_row + 1, 0).min(max_point);
+                // Kakoune gives the cursor a `max_column` target so that
+                // vertical movement keeps hugging line ends.
+                selection.goal = SelectionGoal::HorizontalPosition(f64::INFINITY);
             }
 
             editor.change_selections(Default::default(), window, cx, |s| {
@@ -1477,6 +1480,7 @@ impl Vim {
                 }
                 selection.start = start;
                 selection.end = end;
+                selection.goal = SelectionGoal::HorizontalPosition(f64::INFINITY);
             }
 
             editor.change_selections(Default::default(), window, cx, |s| {
@@ -1700,6 +1704,47 @@ mod test {
             one
             «two
             ˇ»three"},
+            Mode::KakouneNormal,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_line_selection_vertical_movement(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `x` gives the cursor an end-of-line target column, so `J` extends
+        // over the whole line below regardless of the original column.
+        cx.set_state(
+            indoc::indoc! {"
+            oˇne
+            twolonger
+            three"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("x shift-j");
+        cx.assert_state(
+            indoc::indoc! {"
+            «one
+            twolonger
+            ˇ»three"},
+            Mode::KakouneNormal,
+        );
+
+        // Plain `j` collapses to the end of the line below, like kakoune.
+        cx.set_state(
+            indoc::indoc! {"
+            oˇne
+            twolonger
+            three"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("x j");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            twolongerˇ
+            three"},
             Mode::KakouneNormal,
         );
     }
