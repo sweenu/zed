@@ -689,6 +689,7 @@
       "alt-shift-u": "vim::KakouneSelectionRedo",
       "\\": "vim::KakouneDisableHooks",
       "&": "vim::KakouneAlign",
+      "alt-&": "vim::KakouneCopyIndent",
 
       // View mode: `v` applies one view command, `V` locks the mode until
       // escape.
