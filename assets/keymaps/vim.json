@@ -659,15 +659,33 @@
       "alt-(": ["vim::KakouneRotateContent", { "backward": true }],
       "shift-z": "vim::KakouneSaveSelections",
       "z": "vim::KakouneRestoreSelections",
+      "alt-z a": ["vim::KakouneCombineSelections", { "kind": "append" }],
+      "alt-z u": ["vim::KakouneCombineSelections", { "kind": "union" }],
+      "alt-z i": ["vim::KakouneCombineSelections", { "kind": "intersect" }],
+      "alt-z <": ["vim::KakouneCombineSelections", { "kind": "select_leftmost" }],
+      "alt-z >": ["vim::KakouneCombineSelections", { "kind": "select_rightmost" }],
+      "alt-z +": ["vim::KakouneCombineSelections", { "kind": "select_longest" }],
+      "alt-z -": ["vim::KakouneCombineSelections", { "kind": "select_shortest" }],
+      "alt-shift-z a": ["vim::KakouneCombineSelections", { "kind": "append", "save": true }],
+      "alt-shift-z u": ["vim::KakouneCombineSelections", { "kind": "union", "save": true }],
+      "alt-shift-z i": ["vim::KakouneCombineSelections", { "kind": "intersect", "save": true }],
+      "alt-shift-z <": ["vim::KakouneCombineSelections", { "kind": "select_leftmost", "save": true }],
+      "alt-shift-z >": ["vim::KakouneCombineSelections", { "kind": "select_rightmost", "save": true }],
+      "alt-shift-z +": ["vim::KakouneCombineSelections", { "kind": "select_longest", "save": true }],
+      "alt-shift-z -": ["vim::KakouneCombineSelections", { "kind": "select_shortest", "save": true }],
+      "alt-u": "vim::KakouneSelectionUndo",
+      "alt-shift-u": "vim::KakouneSelectionRedo",
       "&": "vim::KakouneAlign",
 
-      // View mode
+      // View mode: `v` applies one view command, `V` locks the mode until
+      // escape.
       "v v": "editor::ScrollCursorCenter",
       "v c": "editor::ScrollCursorCenter",
       "v t": "editor::ScrollCursorTop",
       "v b": "editor::ScrollCursorBottom",
       "v j": "vim::LineDown",
       "v k": "vim::LineUp",
+      "shift-v": "vim::PushKakouneView",
 
       // Search
       "/": ["vim::Search", { "backwards": false }],
@@ -729,6 +747,18 @@
       "shift-g t": ["vim::KakouneMotion", { "motion": "window_top", "extend": true }],
       "shift-g c": ["vim::KakouneMotion", { "motion": "window_middle", "extend": true }],
       "shift-g b": ["vim::KakouneMotion", { "motion": "window_bottom", "extend": true }],
+    },
+  },
+  {
+    "context": "vim_operator == kakoune_view",
+    "bindings": {
+      "v": "editor::ScrollCursorCenter",
+      "c": "editor::ScrollCursorCenter",
+      "t": "editor::ScrollCursorTop",
+      "b": "editor::ScrollCursorBottom",
+      "j": "vim::LineDown",
+      "k": "vim::LineUp",
+      "escape": "vim::ClearOperators",
     },
   },
   {
