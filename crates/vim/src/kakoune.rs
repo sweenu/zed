@@ -1431,26 +1431,71 @@ impl Vim {
     }
 
     /// Kakoune's `&`: align the selection cursors by inserting spaces before
-    /// the first character of each selection.
+    /// the first character of each selection. Multiple selections on the
+    /// same line form column groups (the first selection of each line is in
+    /// the first group, and so on), each aligned independently in order.
     fn kakoune_align(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.update_editor(cx, |_, editor, cx| {
             let display_map = editor.display_snapshot(cx);
             let selections = editor.selections.all::<Point>(&display_map);
-            let Some(max_column) = selections.iter().map(|s| s.head().column).max() else {
-                return;
+
+            // Like Kakoune, alignment only works with single-line selections.
+            // A full-line selection's exclusive end sits on the next row.
+            let single_line = |selection: &text::Selection<Point>| {
+                let end_row = if selection.end.column == 0 && selection.end.row > selection.start.row
+                {
+                    selection.end.row - 1
+                } else {
+                    selection.end.row
+                };
+                selection.start.row == end_row
             };
-            let mut edits = Vec::new();
-            for selection in &selections {
-                let padding = (max_column - selection.head().column) as usize;
-                if padding > 0 {
-                    edits.push((selection.start..selection.start, " ".repeat(padding)));
-                }
-            }
-            if edits.is_empty() {
+            if !selections.iter().all(single_line) {
                 return;
             }
+
+            let mut groups: Vec<Vec<usize>> = Vec::new();
+            let mut last_row = None;
+            let mut column = 0;
+            for (index, selection) in selections.iter().enumerate() {
+                column = if last_row == Some(selection.start.row) {
+                    column + 1
+                } else {
+                    0
+                };
+                if groups.len() <= column {
+                    groups.push(Vec::new());
+                }
+                groups[column].push(index);
+                last_row = Some(selection.start.row);
+            }
+
             editor.transact(window, cx, |editor, _, cx| {
-                editor.edit(edits, cx);
+                // Groups are aligned in order: insertions for one group shift
+                // the later groups, whose columns are measured afterwards.
+                for group in groups {
+                    let display_map = editor.display_snapshot(cx);
+                    let selections = editor.selections.all::<Point>(&display_map);
+                    // The display column expands tabs.
+                    let cursor_column = |index: usize| {
+                        selections[index].head().to_display_point(&display_map).column()
+                    };
+                    let Some(max_column) = group.iter().map(|&index| cursor_column(index)).max()
+                    else {
+                        continue;
+                    };
+                    let mut edits = Vec::new();
+                    for &index in &group {
+                        let padding = (max_column - cursor_column(index)) as usize;
+                        if padding > 0 {
+                            let start = selections[index].start;
+                            edits.push((start..start, " ".repeat(padding)));
+                        }
+                    }
+                    if !edits.is_empty() {
+                        editor.edit(edits, cx);
+                    }
+                }
             });
         });
     }
@@ -2662,6 +2707,39 @@ mod test {
             indoc::indoc! {"
             a      «=ˇ» 1
             longer «=ˇ» 2"},
+            Mode::KakouneNormal,
+        );
+
+        // Multiple selections per line form column groups, each aligned
+        // independently.
+        cx.set_state(
+            indoc::indoc! {"
+            a «=ˇ» 11 «#ˇ» x
+            longer «=ˇ» 2 «#ˇ» y"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("&");
+        cx.assert_state(
+            indoc::indoc! {"
+            a      «=ˇ» 11 «#ˇ» x
+            longer «=ˇ» 2  «#ˇ» y"},
+            Mode::KakouneNormal,
+        );
+
+        // Multi-line selections are not aligned.
+        cx.set_state(
+            indoc::indoc! {"
+            o«ne
+            tˇ»wo
+            thˇree"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("&");
+        cx.assert_state(
+            indoc::indoc! {"
+            o«ne
+            tˇ»wo
+            thˇree"},
             Mode::KakouneNormal,
         );
     }
