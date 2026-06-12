@@ -33,7 +33,7 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 
 - Registers, macros, and marks use Vim's machinery rather than Kakoune's register semantics; `Z`/`z` use a single slot instead of the `^` register.
 - `alt-&` (copy indent) and the `aligntab` behavior of `&` are not implemented.
-- The whitespace (`space`) and custom (`c`) text objects are not implemented.
+- The custom (`c`) text object is not implemented.
 - Shell-driven commands (`|`, `!`, `$`, `@`) are not implemented yet.
 - Like Kakoune, `space` ships without default bindings; define your own user-mode style chords in your keymap with the `vim_mode == kakoune_normal` context.
 - In the lock view mode, keys other than the view keys execute their normal binding and leave the mode, instead of being ignored.
