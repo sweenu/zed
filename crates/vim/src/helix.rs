@@ -723,6 +723,8 @@ impl Vim {
                 });
             }
         });
+        self.status_label = Some("select:".into());
+        cx.notify();
         self.start_recording(cx);
     }
 
