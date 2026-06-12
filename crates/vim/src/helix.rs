@@ -237,7 +237,7 @@ impl Vim {
     }
 
     /// Updates all selections based on where the cursors are.
-    fn helix_new_selections(
+    pub(crate) fn helix_new_selections(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
