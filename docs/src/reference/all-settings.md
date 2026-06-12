@@ -2955,6 +2955,16 @@ Customizing `hidden_files` replaces the default patterns. To hide `*.log` files 
 }
 ```
 
+## Kakoune Mode
+
+- Description: Whether or not to enable Kakoune mode. Enabling `kakoune_mode` also enables `vim_mode`. See the [Kakoune documentation](../kakoune.md) for more details.
+- Setting: `kakoune_mode`
+- Default: `false`
+
+**Options**
+
+`boolean` values
+
 ## Indent Guides
 
 - Description: Configuration related to indent guides. Indent guides can be configured separately for each language.
