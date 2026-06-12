@@ -648,6 +648,13 @@
       "alt-shift-k": "vim::KakouneClearMatching",
       "shift-c": "vim::HelixDuplicateBelow",
       "alt-shift-c": "vim::HelixDuplicateAbove",
+      "_": "vim::KakouneTrimWhitespace",
+      "alt-_": "vim::KakouneMergeContiguous",
+      ")": "vim::KakouneRotateMain",
+      "(": ["vim::KakouneRotateMain", { "backward": true }],
+      "shift-z": "vim::KakouneSaveSelections",
+      "z": "vim::KakouneRestoreSelections",
+      "&": "vim::KakouneAlign",
 
       // Search
       "/": ["vim::Search", { "backwards": false }],
