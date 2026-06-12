@@ -1078,6 +1078,9 @@ pub struct SearchState {
     pub prior_operator: Option<Operator>,
     pub prior_mode: Mode,
     pub helix_select: bool,
+    /// Kakoune's `?` extends the selection to the next match instead of
+    /// selecting it.
+    pub kakoune_extend: bool,
     pub _dismiss_subscription: Option<gpui::Subscription>,
 }
 
