@@ -474,14 +474,16 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
             return;
         }
         if action.filename.is_empty() {
+            // Kakoune's `\` skips automatic formatting for this save.
+            let default_intent = if vim.kakoune_hooks_disabled.take().is_some() {
+                SaveIntent::SaveWithoutFormat
+            } else {
+                SaveIntent::Save
+            };
             if let Some(workspace) = vim.workspace(window, cx) {
                 workspace.update(cx, |workspace, cx| {
                     workspace
-                        .save_active_item(
-                            action.save_intent.unwrap_or(SaveIntent::Save),
-                            window,
-                            cx,
-                        )
+                        .save_active_item(action.save_intent.unwrap_or(default_intent), window, cx)
                         .detach_and_prompt_err("Failed to save", window, cx, |_, _, _| None);
                 });
             }

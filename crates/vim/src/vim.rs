@@ -48,7 +48,8 @@ pub use settings::{
     ModeContent, Settings, SettingsStore, UseSystemClipboard, update_settings_file,
 };
 use state::{
-    HelixJumpBehaviour, HelixJumpLabel, Mode, Operator, RecordedSelection, SearchState, VimGlobals,
+    HelixJumpBehaviour, HelixJumpLabel, KakouneHooksPhase, Mode, Operator, RecordedSelection,
+    SearchState, VimGlobals,
 };
 use std::{mem, ops::Range, sync::Arc};
 use surrounds::SurroundsType;
@@ -560,6 +561,8 @@ pub(crate) struct Vim {
     pub(crate) kakoune_selection_redo: Vec<Vec<Selection<Anchor>>>,
     pub(crate) kakoune_last_selections: Vec<Selection<Anchor>>,
     pub(crate) kakoune_restoring_selections: bool,
+    /// Kakoune's `\`: hooks are disabled for the next command.
+    pub(crate) kakoune_hooks_disabled: Option<KakouneHooksPhase>,
 
     pub(crate) current_tx: Option<TransactionId>,
     pub(crate) current_anchor: Option<Selection<Anchor>>,
@@ -634,6 +637,7 @@ impl Vim {
             kakoune_selection_redo: Vec::new(),
             kakoune_last_selections: Vec::new(),
             kakoune_restoring_selections: false,
+            kakoune_hooks_disabled: None,
             current_tx: None,
             undo_last_line_tx: None,
             current_anchor: None,
@@ -1101,6 +1105,17 @@ impl Vim {
                 if vim.status_label.take().is_some() {
                     cx.notify();
                 }
+                // Kakoune's `\` applies to the next command and lasts through
+                // any mode that command moves to (such as an insert session).
+                match vim.kakoune_hooks_disabled {
+                    Some(KakouneHooksPhase::Armed) => {
+                        vim.kakoune_hooks_disabled = Some(KakouneHooksPhase::Active);
+                    }
+                    Some(KakouneHooksPhase::Active) if vim.mode != Mode::Insert => {
+                        vim.kakoune_hooks_disabled = None;
+                    }
+                    _ => {}
+                }
             }
             f(vim, action, window, cx);
         }));
@@ -1307,6 +1322,12 @@ impl Vim {
             ) {
                 self.mode = Mode::KakouneNormal
             }
+            // Returning to normal mode ends the command `\` applied to.
+            if self.mode == Mode::KakouneNormal
+                && self.kakoune_hooks_disabled == Some(KakouneHooksPhase::Active)
+            {
+                self.kakoune_hooks_disabled = None;
+            }
         } else if HelixModeSetting::get_global(cx).0 {
             if self.mode == Mode::Normal {
                 self.mode = Mode::HelixNormal
@@ -1503,6 +1524,9 @@ impl Vim {
     }
 
     pub fn should_autoindent(&self) -> bool {
+        if self.kakoune_hooks_disabled.is_some() {
+            return false;
+        }
         !(self.mode == Mode::Insert && self.last_mode == Mode::VisualBlock)
     }
 
@@ -1562,6 +1586,9 @@ impl Vim {
             || mode == "kakoune_normal"
         {
             context.add("VimControl");
+        }
+        if self.kakoune_hooks_disabled.is_some() {
+            context.add("kakoune_hooks_disabled");
         }
         context.set("vim_mode", mode);
         context.set("vim_operator", operator_id);
