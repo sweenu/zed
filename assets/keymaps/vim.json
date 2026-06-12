@@ -664,6 +664,8 @@
       "alt-_": "vim::KakouneMergeContiguous",
       ")": "vim::KakouneRotateMain",
       "(": ["vim::KakouneRotateMain", { "backward": true }],
+      "alt-)": "vim::KakouneRotateContent",
+      "alt-(": ["vim::KakouneRotateContent", { "backward": true }],
       "shift-z": "vim::KakouneSaveSelections",
       "z": "vim::KakouneRestoreSelections",
       "&": "vim::KakouneAlign",
