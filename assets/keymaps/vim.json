@@ -796,6 +796,7 @@
       "p": "vim::Paragraph",
       "i": "vim::IndentObj",
       "u": "vim::Argument",
+      "n": "vim::KakouneNumberObject",
     },
   },
   {
