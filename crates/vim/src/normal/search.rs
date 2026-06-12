@@ -294,6 +294,7 @@ impl Vim {
             prior_mode,
             helix_select: false,
             kakoune_extend: action.extend,
+            kakoune_regex_op: None,
             _dismiss_subscription: Some(subscription),
         }
     }
@@ -314,9 +315,10 @@ impl Vim {
             return;
         };
         let new_selections = self.editor_selections(window, cx);
+        let kakoune_regex_op = self.search.kakoune_regex_op.take();
         let result = pane.update(cx, |pane, cx| {
             let search_bar = pane.toolbar().read(cx).item_of_type::<BufferSearchBar>()?;
-            if self.search.helix_select {
+            if self.search.helix_select || kakoune_regex_op.is_some() {
                 search_bar.update(cx, |search_bar, cx| {
                     search_bar.select_all_matches(&Default::default(), window, cx)
                 });
@@ -349,6 +351,12 @@ impl Vim {
                 Some((prior_selections, prior_mode, prior_operator))
             })
         });
+
+        if let Some(op) = kakoune_regex_op {
+            let prior_selections: Vec<_> = self.search.prior_selections.drain(..).collect();
+            self.kakoune_apply_regex_op(op, prior_selections, window, cx);
+            return;
+        }
 
         let Some((mut prior_selections, prior_mode, prior_operator)) = result else {
             return;
