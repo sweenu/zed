@@ -553,6 +553,8 @@ pub(crate) struct Vim {
     pub(crate) replacements: Vec<(Range<editor::Anchor>, String)>,
 
     pub(crate) stored_visual_mode: Option<(Mode, Vec<bool>)>,
+    /// Selections saved by Kakoune mode's `Z`, restored by `z`.
+    pub(crate) kakoune_saved_selections: Vec<Selection<Anchor>>,
 
     pub(crate) current_tx: Option<TransactionId>,
     pub(crate) current_anchor: Option<Selection<Anchor>>,
@@ -622,6 +624,7 @@ impl Vim {
             replacements: Vec::new(),
 
             stored_visual_mode: None,
+            kakoune_saved_selections: Vec::new(),
             current_tx: None,
             undo_last_line_tx: None,
             current_anchor: None,
