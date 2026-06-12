@@ -187,6 +187,14 @@ impl VimTestContext {
         })
     }
 
+    pub fn enable_kakoune(&mut self) {
+        self.cx.update(|_, cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |s| s.kakoune_mode = Some(true));
+            });
+        })
+    }
+
     pub fn mode(&mut self) -> Mode {
         self.update_editor(|editor, _, cx| editor.addon::<VimAddon>().unwrap().entity.read(cx).mode)
     }
