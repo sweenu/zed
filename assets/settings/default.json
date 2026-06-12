@@ -126,6 +126,9 @@
   // Whether to enable helix mode and key bindings.
   // Enabling this mode will automatically enable vim mode.
   "helix_mode": false,
+  // Whether to enable kakoune mode and key bindings.
+  // Enabling this mode will automatically enable vim mode.
+  "kakoune_mode": false,
   // Whether to show the informational hover box when moving the mouse
   // over symbols in the editor.
   "hover_popover_enabled": true,

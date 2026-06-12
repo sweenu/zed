@@ -1450,7 +1450,7 @@ fn keymap_page() -> SettingsPage {
         ]
     }
 
-    fn modal_editing_section() -> [SettingsPageItem; 3] {
+    fn modal_editing_section() -> [SettingsPageItem; 4] {
         [
             SettingsPageItem::SectionHeader("Modal Editing"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -1473,6 +1473,18 @@ fn keymap_page() -> SettingsPage {
                     json_path: Some("helix_mode"),
                     pick: |settings_content| settings_content.helix_mode.as_ref(),
                     write: write_helix_mode,
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Kakoune Mode",
+                description: "Enable Kakoune mode and key bindings.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("kakoune_mode"),
+                    pick: |settings_content| settings_content.kakoune_mode.as_ref(),
+                    write: write_kakoune_mode,
                 }),
                 metadata: None,
                 files: USER,
@@ -10358,30 +10370,58 @@ where
     <<T as strum::IntoDiscriminant>::Discriminant as strum::VariantArray>::VARIANTS
 }
 
-/// Updates the `vim_mode` setting, disabling `helix_mode` if present and
-/// `vim_mode` is being enabled.
+/// Updates the `vim_mode` setting, disabling `helix_mode` and `kakoune_mode`
+/// if present and `vim_mode` is being enabled.
 fn write_vim_mode(settings: &mut SettingsContent, value: Option<bool>, _: &App) {
     write_vim_mode_inner(settings, value);
 }
 
 fn write_vim_mode_inner(settings: &mut SettingsContent, value: Option<bool>) {
-    if value == Some(true) && settings.helix_mode == Some(true) {
-        settings.helix_mode = Some(false);
+    if value == Some(true) {
+        if settings.helix_mode == Some(true) {
+            settings.helix_mode = Some(false);
+        }
+        if settings.kakoune_mode == Some(true) {
+            settings.kakoune_mode = Some(false);
+        }
     }
     settings.vim_mode = value;
 }
 
-/// Updates the `helix_mode` setting, disabling `vim_mode` if present and
-/// `helix_mode` is being enabled.
+/// Updates the `helix_mode` setting, disabling `vim_mode` and `kakoune_mode`
+/// if present and `helix_mode` is being enabled.
 fn write_helix_mode(settings: &mut SettingsContent, value: Option<bool>, _: &App) {
     write_helix_mode_inner(settings, value);
 }
 
 fn write_helix_mode_inner(settings: &mut SettingsContent, value: Option<bool>) {
-    if value == Some(true) && settings.vim_mode == Some(true) {
-        settings.vim_mode = Some(false);
+    if value == Some(true) {
+        if settings.vim_mode == Some(true) {
+            settings.vim_mode = Some(false);
+        }
+        if settings.kakoune_mode == Some(true) {
+            settings.kakoune_mode = Some(false);
+        }
     }
     settings.helix_mode = value;
+}
+
+/// Updates the `kakoune_mode` setting, disabling `vim_mode` and `helix_mode`
+/// if present and `kakoune_mode` is being enabled.
+fn write_kakoune_mode(settings: &mut SettingsContent, value: Option<bool>, _: &App) {
+    write_kakoune_mode_inner(settings, value);
+}
+
+fn write_kakoune_mode_inner(settings: &mut SettingsContent, value: Option<bool>) {
+    if value == Some(true) {
+        if settings.vim_mode == Some(true) {
+            settings.vim_mode = Some(false);
+        }
+        if settings.helix_mode == Some(true) {
+            settings.helix_mode = Some(false);
+        }
+    }
+    settings.kakoune_mode = value;
 }
 
 #[cfg(test)]
@@ -10427,5 +10467,25 @@ mod tests {
         write_vim_mode_inner(&mut settings, Some(true));
         assert_eq!(settings.vim_mode, Some(true));
         assert_eq!(settings.helix_mode, Some(false));
+
+        // Enabling kakoune mode should update `kakoune_mode` and disable
+        // `vim_mode` while leaving the already-disabled `helix_mode` as is.
+        write_kakoune_mode_inner(&mut settings, Some(true));
+        assert_eq!(settings.kakoune_mode, Some(true));
+        assert_eq!(settings.vim_mode, Some(false));
+        assert_eq!(settings.helix_mode, Some(false));
+
+        // Enabling helix mode should disable `kakoune_mode`.
+        write_helix_mode_inner(&mut settings, Some(true));
+        assert_eq!(settings.helix_mode, Some(true));
+        assert_eq!(settings.kakoune_mode, Some(false));
+
+        // Enabling kakoune mode while only `vim_mode` is unset should not
+        // touch `vim_mode`.
+        let mut settings = SettingsContent::default();
+        write_kakoune_mode_inner(&mut settings, Some(true));
+        assert_eq!(settings.kakoune_mode, Some(true));
+        assert_eq!(settings.vim_mode, None);
+        assert_eq!(settings.helix_mode, None);
     }
 }
