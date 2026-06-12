@@ -296,6 +296,18 @@ impl Vim {
             kakoune_extend: action.extend,
             kakoune_regex_op: None,
             _dismiss_subscription: Some(subscription),
+        };
+
+        if action.extend {
+            self.status_label = Some(
+                if action.backwards {
+                    "reverse search (extend):"
+                } else {
+                    "search (extend):"
+                }
+                .into(),
+            );
+            cx.notify();
         }
     }
 
@@ -310,6 +322,11 @@ impl Vim {
     }
 
     pub fn search_submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Submitting comes through a workspace action, which bypasses the
+        // status label clearing in `Vim::action`.
+        if self.status_label.take().is_some() {
+            cx.notify();
+        }
         self.store_visual_marks(window, cx);
         let Some(pane) = self.pane(window, cx) else {
             return;
