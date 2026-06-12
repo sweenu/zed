@@ -73,6 +73,18 @@ pub struct KakouneMotion {
     extend: bool,
 }
 
+/// Selects to the next (or previous) sequence enclosed by matching pair
+/// characters, mirroring Kakoune's `m`/`M`/`alt-m`/`alt-M`.
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
+#[action(namespace = vim)]
+#[serde(deny_unknown_fields)]
+pub struct KakouneMatching {
+    #[serde(default)]
+    backward: bool,
+    #[serde(default)]
+    extend: bool,
+}
+
 /// Starts an object selection: without `to`, the whole surrounding object is
 /// selected; with `to`, the selection goes from the cursor to the object's
 /// start or end (optionally extending the current selection).
@@ -113,7 +125,6 @@ enum KakouneMotionKind {
     WindowTop,
     WindowMiddle,
     WindowBottom,
-    Matching,
     SelectToLineBegin,
     SelectToLineEnd,
     EndOfBuffer,
@@ -147,9 +158,6 @@ impl KakouneMotionKind {
             Self::WindowTop => Motion::WindowTop,
             Self::WindowMiddle => Motion::WindowMiddle,
             Self::WindowBottom => Motion::WindowBottom,
-            Self::Matching => Motion::Matching {
-                match_quotes: false,
-            },
             // EndOfBuffer is handled by `kakoune_end_of_buffer` and never
             // converted; EndOfDocument is its closest equivalent.
             Self::EndOfBuffer => Motion::EndOfDocument,
@@ -159,10 +167,7 @@ impl KakouneMotionKind {
     /// Kakoune motions that replace each selection with the range from the
     /// cursor to the target, instead of collapsing to the target.
     fn selects_to_target(self) -> bool {
-        matches!(
-            self,
-            Self::SelectToLineBegin | Self::SelectToLineEnd | Self::Matching
-        )
+        matches!(self, Self::SelectToLineBegin | Self::SelectToLineEnd)
     }
 }
 
@@ -176,11 +181,13 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
         }
         let motion = action.motion.to_motion(action.ignore_punctuation);
         if !action.extend && action.motion.selects_to_target() {
-            let include_target = action.motion == KakouneMotionKind::Matching;
-            vim.kakoune_select_to(motion, times, include_target, window, cx);
+            vim.kakoune_select_to(motion, times, window, cx);
         } else {
             vim.kakoune_motion(motion, times, action.extend, window, cx);
         }
+    });
+    Vim::action(editor, cx, |vim, action: &KakouneMatching, window, cx| {
+        vim.kakoune_matching(action.backward, action.extend, window, cx);
     });
     Vim::action(editor, cx, |vim, _: &KakouneEnsureForward, window, cx| {
         vim.update_editor(cx, |_, editor, cx| {
@@ -255,6 +262,75 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
             vim.do_helix_select(Direction::Prev, true, window, cx);
         },
     );
+}
+
+const MATCHING_PAIRS: &[(char, char)] = &[('(', ')'), ('{', '}'), ('[', ']'), ('<', '>')];
+
+fn matching_pair(c: char) -> Option<(char, char, bool)> {
+    MATCHING_PAIRS.iter().find_map(|&(open, close)| {
+        if c == open {
+            Some((open, close, true))
+        } else if c == close {
+            Some((open, close, false))
+        } else {
+            None
+        }
+    })
+}
+
+/// Kakoune's `select_matching`: scan from the cursor (inclusively) for the
+/// first matching-pair character, then return the range it encloses as
+/// `(anchor_char_start, cursor_char_start)`.
+fn matching_range(
+    map: &DisplaySnapshot,
+    cursor: MultiBufferOffset,
+    backward: bool,
+) -> Option<(MultiBufferOffset, MultiBufferOffset)> {
+    let char_at_cursor = movement::chars_after(map, cursor)
+        .next()
+        .filter(|(c, _)| matching_pair(*c).is_some())
+        .map(|(c, range)| (c, range.start));
+    let (found_char, found_offset) = char_at_cursor.or_else(|| {
+        if backward {
+            movement::chars_before(map, cursor)
+                .find(|(c, _)| matching_pair(*c).is_some())
+                .map(|(c, range)| (c, range.start))
+        } else {
+            movement::chars_after(map, cursor)
+                .find(|(c, _)| matching_pair(*c).is_some())
+                .map(|(c, range)| (c, range.start))
+        }
+    })?;
+
+    let (open, close, is_opener) = matching_pair(found_char)?;
+    if is_opener {
+        let mut level = 0i32;
+        for (c, range) in movement::chars_after(map, found_offset) {
+            if c == open {
+                level += 1;
+            } else if c == close {
+                level -= 1;
+                if level == 0 {
+                    return Some((found_offset, range.start));
+                }
+            }
+        }
+        None
+    } else {
+        // The scan starts on the closing character itself.
+        let mut level = 1i32;
+        for (c, range) in movement::chars_before(map, found_offset) {
+            if c == close {
+                level += 1;
+            } else if c == open {
+                level -= 1;
+                if level == 0 {
+                    return Some((found_offset, range.start));
+                }
+            }
+        }
+        None
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -490,17 +566,15 @@ impl Vim {
     }
 
     /// Replaces each selection with the range between the current cursor and
-    /// the motion target (used by `alt-h`, `alt-l`, and `m`).
+    /// the motion target (used by `alt-h` and `alt-l`).
     ///
-    /// `include_target` selects the character under the target as well; it
-    /// only matters for forward targets, since a backward target is always
-    /// covered by the selection start. `EndOfLine` must not include the
-    /// target because its `move_point` already lands past the last character.
+    /// The target character itself is not included: a backward target is
+    /// always covered by the selection start, and `EndOfLine`'s `move_point`
+    /// already lands past the last character.
     fn kakoune_select_to(
         &mut self,
         motion: Motion,
         times: Option<usize>,
-        include_target: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -531,12 +605,7 @@ impl Vim {
                             SelectionGoal::None,
                         );
                     } else {
-                        let head = if include_target {
-                            movement::right(map, target)
-                        } else {
-                            target
-                        };
-                        selection.set_head_tail(head, cursor, SelectionGoal::None);
+                        selection.set_head_tail(target, cursor, SelectionGoal::None);
                     }
                 })
             });
@@ -622,6 +691,54 @@ impl Vim {
                 })
             });
         });
+    }
+
+    /// Kakoune's `m`/`M`/`alt-m`/`alt-M`: select (or extend) to the next or
+    /// previous sequence enclosed by matching pair characters.
+    fn kakoune_matching(
+        &mut self,
+        backward: bool,
+        extend: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if extend {
+            self.update_editor(cx, |_, editor, cx| {
+                editor.change_selections(Default::default(), window, cx, |s| {
+                    s.move_with(&mut |map, selection| {
+                        let cursor = if selection.reversed || selection.is_empty() {
+                            selection.head()
+                        } else {
+                            movement::left(map, selection.head())
+                        };
+                        let cursor_offset = cursor.to_offset(map, Bias::Left);
+                        let Some((_, target)) = matching_range(map, cursor_offset, backward) else {
+                            return;
+                        };
+                        selection.set_head(target.to_display_point(map), SelectionGoal::None);
+                        if !selection.reversed {
+                            selection.end = movement::right(map, selection.end);
+                        }
+                    });
+                });
+            });
+        } else {
+            self.helix_new_selections(window, cx, &mut |cursor, map| {
+                let cursor_offset = cursor.to_offset(map, Bias::Left);
+                let (anchor, target) = matching_range(map, cursor_offset, backward)?;
+                let next_char = |offset: MultiBufferOffset| {
+                    movement::chars_after(map, offset)
+                        .next()
+                        .map(|(_, range)| range.end)
+                };
+                let (head, tail) = if target < anchor {
+                    (target.to_display_point(map), next_char(anchor)?.to_display_point(map))
+                } else {
+                    (next_char(target)?.to_display_point(map), anchor.to_display_point(map))
+                };
+                Some((head, tail))
+            });
+        }
     }
 
     /// Kakoune's `[`/`]`/`{`/`}`: select (or extend) from the cursor to the
@@ -1431,6 +1548,72 @@ mod test {
             indoc::indoc! {"
             «oneˇ»
             two"},
+            Mode::KakouneNormal,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_matching_pairs(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // From inside, `m` selects the next enclosed sequence: the scan finds
+        // the closing bracket first and selects back to its opener.
+        cx.set_state("foo(bar bˇaz qux)end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("m");
+        cx.assert_state("foo«ˇ(bar baz qux)»end", Mode::KakouneNormal);
+
+        // On an opening bracket, `m` selects to its match.
+        cx.set_state("fooˇ(bar (baz) qux)end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("m");
+        cx.assert_state("foo«(bar (baz) qux)ˇ»end", Mode::KakouneNormal);
+
+        // Before any bracket, `m` scans forward to the next pair character.
+        cx.set_state("ˇfoo (bar)", Mode::KakouneNormal);
+        cx.simulate_keystrokes("m");
+        cx.assert_state("foo «(bar)ˇ»", Mode::KakouneNormal);
+
+        // `alt-m` scans backwards.
+        cx.set_state("(foo) bˇar", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-m");
+        cx.assert_state("«ˇ(foo)» bar", Mode::KakouneNormal);
+
+        // `M` extends to the matching target.
+        cx.set_state("«fooˇ»(bar)end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("shift-m");
+        cx.assert_state("«foo(bar)ˇ»end", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_count_goto_line(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        cx.set_state(
+            indoc::indoc! {"
+            one
+            two
+            thˇree
+            four"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("2 g");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            ˇtwo
+            three
+            four"},
+            Mode::KakouneNormal,
+        );
+
+        cx.simulate_keystrokes("4 shift-g");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            «two
+            three
+            fˇ»our"},
             Mode::KakouneNormal,
         );
     }
