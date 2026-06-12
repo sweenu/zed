@@ -938,6 +938,18 @@ impl Vim {
                 });
             }
         });
+        // Show which transformation the prompt drives, like Kakoune's
+        // prompts. The label is cleared when the next vim action (such as
+        // the search submit) is dispatched.
+        self.status_label = Some(
+            match op {
+                KakouneRegexOp::Split => "split:",
+                KakouneRegexOp::KeepMatching => "keep matching:",
+                KakouneRegexOp::ClearMatching => "keep not matching:",
+            }
+            .into(),
+        );
+        cx.notify();
     }
 
     /// Applies a pending selection transformation, where the editor's current
@@ -1964,10 +1976,25 @@ mod test {
         let mut cx = VimTestContext::new(cx, true).await;
         cx.enable_kakoune();
 
-        // `S` splits the selection on the regex matches.
+        let status_label = |cx: &mut VimTestContext| {
+            cx.update_editor(|editor, _, cx| {
+                editor
+                    .addon::<crate::VimAddon>()
+                    .unwrap()
+                    .entity
+                    .read(cx)
+                    .status_label
+                    .clone()
+            })
+        };
+
+        // `S` splits the selection on the regex matches, showing the pending
+        // transformation in the mode indicator while the prompt is open.
         cx.set_state("«one, two, threeˇ» end", Mode::KakouneNormal);
         cx.simulate_keystrokes("shift-s , space");
+        assert_eq!(status_label(&mut cx).as_deref(), Some("split:"));
         cx.simulate_keystrokes("enter");
+        assert_eq!(status_label(&mut cx), None);
         cx.assert_state("«oneˇ», «twoˇ», «threeˇ» end", Mode::KakouneNormal);
     }
 
