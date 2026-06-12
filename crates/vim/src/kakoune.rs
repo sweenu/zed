@@ -32,6 +32,10 @@ actions!(
         KakouneAddSelectionNext,
         /// Adds a new selection with the previous match for the current search query.
         KakouneAddSelectionPrevious,
+        /// Adds an empty line below the cursor without entering insert mode.
+        KakouneAddLineBelow,
+        /// Adds an empty line above the cursor without entering insert mode.
+        KakouneAddLineAbove,
     ]
 );
 
@@ -151,6 +155,12 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     });
     Vim::action(editor, cx, |vim, _: &KakouneTrimToLines, window, cx| {
         vim.kakoune_trim_to_lines(window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &KakouneAddLineBelow, window, cx| {
+        vim.kakoune_add_line(false, window, cx);
+    });
+    Vim::action(editor, cx, |vim, _: &KakouneAddLineAbove, window, cx| {
+        vim.kakoune_add_line(true, window, cx);
     });
     Vim::action(editor, cx, |vim, _: &KakouneAddSelectionNext, window, cx| {
         vim.do_helix_select(Direction::Next, true, window, cx);
@@ -531,6 +541,33 @@ impl Vim {
         });
     }
 
+    /// Kakoune's `alt-o`/`alt-O`: add empty lines around the cursor's line
+    /// while staying in normal mode and keeping the selections in place.
+    fn kakoune_add_line(&mut self, above: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let count = Vim::take_count(cx).unwrap_or(1);
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_map.update(cx, |map, cx| map.snapshot(cx));
+            let selections = editor.selections.all::<Point>(&display_map);
+            let buffer_snapshot = display_map.buffer_snapshot();
+
+            let text = "\n".repeat(count);
+            let mut edits = Vec::new();
+            for selection in &selections {
+                let row = selection.head().row;
+                let position = if above {
+                    Point::new(row, 0)
+                } else {
+                    Point::new(row, buffer_snapshot.line_len(MultiBufferRow(row)))
+                };
+                edits.push((position..position, text.clone()));
+            }
+
+            editor.transact(window, cx, |editor, _, cx| {
+                editor.edit(edits, cx);
+            });
+        });
+    }
+
     /// Kakoune's `x`: expand each selection to cover whole lines, including
     /// the trailing end-of-line.
     fn kakoune_expand_to_lines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -883,6 +920,110 @@ mod test {
         cx.simulate_keystrokes("? t w o");
         cx.simulate_keystrokes("enter");
         cx.assert_state("«one twoˇ» three two", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_changes(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `d` deletes the selection (yanking it).
+        cx.set_state("one «twoˇ» three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("d");
+        cx.assert_state("one ˇ three", Mode::KakouneNormal);
+
+        // `y` yanks and `p` pastes after the selection end, selecting the
+        // pasted text.
+        cx.set_state("«oneˇ» two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("y p");
+        cx.assert_state("one«oneˇ» two", Mode::KakouneNormal);
+
+        // `c` deletes the selection and enters insert mode.
+        cx.set_state("one «twoˇ» three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("c");
+        assert_eq!(cx.mode(), Mode::Insert);
+        cx.simulate_keystrokes("x escape");
+        cx.assert_state("one xˇ three", Mode::KakouneNormal);
+
+        // `r` replaces every character of the selection.
+        cx.set_state("one «twoˇ» three", Mode::KakouneNormal);
+        cx.simulate_keystrokes("r z");
+        cx.assert_state("one «zzzˇ» three", Mode::KakouneNormal);
+
+        // Case conversions.
+        cx.set_state("«oneˇ» two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("~");
+        cx.assert_state("«ONEˇ» two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("`");
+        cx.assert_state("«oneˇ» two", Mode::KakouneNormal);
+
+        // Undo and redo.
+        cx.simulate_keystrokes("u");
+        cx.assert_state("«ONEˇ» two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("shift-u");
+        cx.assert_state("«oneˇ» two", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_add_lines_around_cursor(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        cx.set_state(
+            indoc::indoc! {"
+            one
+            tˇwo
+            three"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("alt-o");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            tˇwo
+
+            three"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("alt-shift-o");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+
+            tˇwo
+
+            three"},
+            Mode::KakouneNormal,
+        );
+    }
+
+    #[gpui::test]
+    async fn test_selection_duplication(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `C` duplicates selections on the following line, `,` keeps only the
+        // newest selection.
+        cx.set_state(
+            indoc::indoc! {"
+            oˇne
+            two"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes("shift-c");
+        cx.assert_state(
+            indoc::indoc! {"
+            oˇne
+            tˇwo"},
+            Mode::KakouneNormal,
+        );
+        cx.simulate_keystrokes(",");
+        cx.assert_state(
+            indoc::indoc! {"
+            one
+            tˇwo"},
+            Mode::KakouneNormal,
+        );
     }
 
     #[gpui::test]
