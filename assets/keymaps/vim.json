@@ -596,6 +596,7 @@
       "shift-r": "editor::Paste",
       "alt-shift-r": ["vim::KakounePasteAll", { "position": "replace" }],
       "alt-j": "vim::JoinLines",
+      "alt-shift-j": "vim::KakouneJoinSelectSpaces",
       ">": "vim::Indent",
       "<": "vim::Outdent",
       "u": "vim::Undo",
