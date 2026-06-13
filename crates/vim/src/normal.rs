@@ -1225,7 +1225,7 @@ impl Vim {
         });
     }
 
-    fn exit_temporary_normal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn exit_temporary_normal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.temp_mode {
             self.switch_mode(Mode::Insert, true, window, cx);
         }
