@@ -216,7 +216,8 @@ pub struct KakouneMatching {
 
 /// Starts an object selection: without `to`, the whole surrounding object is
 /// selected; with `to`, the selection goes from the cursor to the object's
-/// start or end (optionally extending the current selection).
+/// start or end (optionally extending the current selection). With `nested`,
+/// every occurrence of the object within each selection is selected instead.
 #[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
 #[action(namespace = vim)]
 #[serde(deny_unknown_fields)]
@@ -227,6 +228,8 @@ pub struct PushKakouneObject {
     to: Option<ObjectBound>,
     #[serde(default)]
     extend: bool,
+    #[serde(default)]
+    nested: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq)]
@@ -334,6 +337,16 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
         vim.kakoune_trim_to_lines(window, cx);
     });
     Vim::action(editor, cx, |vim, action: &PushKakouneObject, window, cx| {
+        if action.nested {
+            vim.push_operator(
+                Operator::KakouneNestedObject {
+                    around: action.around,
+                },
+                window,
+                cx,
+            );
+            return;
+        }
         let target = match action.to {
             None => KakouneObjectTarget::Whole,
             Some(ObjectBound::Start) => KakouneObjectTarget::ToStart {
@@ -462,33 +475,39 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
         },
     );
     Vim::action(editor, cx, |vim, _: &KakouneNumberObject, window, cx| {
-        let Some(Operator::KakouneObject { around, target }) = vim.active_operator() else {
-            vim.clear_operator(window, cx);
-            return;
-        };
+        let operator = vim.active_operator();
         vim.clear_operator(window, cx);
-        vim.kakoune_scanned_object(
-            target,
-            move |map, cursor| number_range(map, cursor, around),
-            window,
-            cx,
-        );
+        match operator {
+            Some(Operator::KakouneObject { around, target }) => vim.kakoune_scanned_object(
+                target,
+                move |map, cursor| number_range(map, cursor, around),
+                window,
+                cx,
+            ),
+            Some(Operator::KakouneNestedObject { around }) => {
+                vim.kakoune_nested_object(NestedObjectKind::Number, around, window, cx)
+            }
+            _ => {}
+        }
     });
     Vim::action(
         editor,
         cx,
         |vim, _: &KakouneWhitespaceObject, window, cx| {
-            let Some(Operator::KakouneObject { around, target }) = vim.active_operator() else {
-                vim.clear_operator(window, cx);
-                return;
-            };
+            let operator = vim.active_operator();
             vim.clear_operator(window, cx);
-            vim.kakoune_scanned_object(
-                target,
-                move |map, cursor| whitespace_range(map, cursor, around),
-                window,
-                cx,
-            );
+            match operator {
+                Some(Operator::KakouneObject { around, target }) => vim.kakoune_scanned_object(
+                    target,
+                    move |map, cursor| whitespace_range(map, cursor, around),
+                    window,
+                    cx,
+                ),
+                Some(Operator::KakouneNestedObject { around }) => {
+                    vim.kakoune_nested_object(NestedObjectKind::Whitespace, around, window, cx)
+                }
+                _ => {}
+            }
         },
     );
     Vim::action(editor, cx, |vim, _: &KakouneDisableHooks, _, cx| {
@@ -679,6 +698,145 @@ fn whitespace_range(
     }
 
     (start < end).then_some(start..end)
+}
+
+/// The object kinds supported by the nested selections of `alt-A`/`alt-I`.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum NestedObjectKind {
+    Word { ignore_punctuation: bool },
+    Number,
+    Whitespace,
+    Delimiter(char),
+    Pair { open: char, close: char, depth: usize },
+}
+
+/// Collects every occurrence of the object within `range`, mirroring
+/// kakoune's `select_nested_*` and `regex_select_nested` selectors.
+fn nested_ranges(
+    map: &DisplaySnapshot,
+    range: Range<MultiBufferOffset>,
+    kind: NestedObjectKind,
+    around: bool,
+    out: &mut Vec<Range<MultiBufferOffset>>,
+) {
+    let chars = movement::chars_after(map, range.start)
+        .take_while(|(_, char_range)| char_range.end <= range.end);
+    match kind {
+        NestedObjectKind::Word { ignore_punctuation } => {
+            let classifier = map.buffer_snapshot().char_classifier_at(range.start);
+            let mut words = Vec::new();
+            let mut run: Option<Range<MultiBufferOffset>> = None;
+            for (c, char_range) in chars {
+                if classifier.kind_with(c, ignore_punctuation) == CharKind::Word {
+                    match &mut run {
+                        Some(run) => run.end = char_range.end,
+                        None => run = Some(char_range),
+                    }
+                } else if let Some(run) = run.take() {
+                    words.push(run);
+                }
+            }
+            words.extend(run);
+            for mut word in words {
+                if around {
+                    // A whole word includes its trailing horizontal blanks.
+                    for (c, char_range) in movement::chars_after(map, word.end) {
+                        if char_range.end > range.end || (c != ' ' && c != '\t') {
+                            break;
+                        }
+                        word.end = char_range.end;
+                    }
+                }
+                out.push(word);
+            }
+        }
+        NestedObjectKind::Number => {
+            let is_number = |c: char| c.is_ascii_digit() || (around && c == '.');
+            let mut run: Option<(Range<MultiBufferOffset>, bool)> = None;
+            for (c, char_range) in chars {
+                let continues = match &run {
+                    // A minus only starts a number.
+                    Some(_) => is_number(c),
+                    None => is_number(c) || c == '-',
+                };
+                if continues {
+                    match &mut run {
+                        Some((run, has_digit)) => {
+                            run.end = char_range.end;
+                            *has_digit |= c.is_ascii_digit();
+                        }
+                        None => run = Some((char_range, c.is_ascii_digit())),
+                    }
+                } else if let Some((run, has_digit)) = run.take()
+                    && has_digit
+                {
+                    out.push(run);
+                }
+            }
+            if let Some((run, true)) = run {
+                out.push(run);
+            }
+        }
+        NestedObjectKind::Whitespace => {
+            let is_whitespace = |c: char| c == ' ' || c == '\t' || (around && c == '\n');
+            let mut run: Option<Range<MultiBufferOffset>> = None;
+            for (c, char_range) in chars {
+                if is_whitespace(c) {
+                    match &mut run {
+                        Some(run) => run.end = char_range.end,
+                        None => run = Some(char_range),
+                    }
+                } else if let Some(run) = run.take() {
+                    out.push(run);
+                }
+            }
+            out.extend(run);
+        }
+        NestedObjectKind::Delimiter(delimiter) => {
+            // Occurrences alternate between opening and closing a region.
+            let mut start: Option<MultiBufferOffset> = None;
+            for (c, char_range) in chars {
+                if c != delimiter {
+                    continue;
+                }
+                match start.take() {
+                    None => start = Some(if around { char_range.start } else { char_range.end }),
+                    Some(start) => {
+                        let end = if around { char_range.end } else { char_range.start };
+                        if start <= end {
+                            out.push(start..end);
+                        }
+                    }
+                }
+            }
+            if let Some(start) = start {
+                out.push(start..range.end);
+            }
+        }
+        NestedObjectKind::Pair { open, close, depth } => {
+            let mut level = -(depth as i64) - 1;
+            let mut start: Option<MultiBufferOffset> = None;
+            for (c, char_range) in chars {
+                if c == open {
+                    level += 1;
+                    if level == 0 {
+                        start = Some(if around { char_range.start } else { char_range.end });
+                    }
+                } else if c == close {
+                    if level == 0 && let Some(start) = start.take() {
+                        let end = if around { char_range.end } else { char_range.start };
+                        if start <= end {
+                            out.push(start..end);
+                        }
+                    }
+                    level -= 1;
+                }
+            }
+            if let Some(start) = start {
+                out.push(start..range.end);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -2166,6 +2324,45 @@ impl Vim {
         });
     }
 
+    /// Kakoune's `alt-A`/`alt-I`: replace each selection with every
+    /// occurrence of the object it contains.
+    pub(crate) fn kakoune_nested_object(
+        &mut self,
+        kind: NestedObjectKind,
+        around: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_recording(cx);
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let mut new_ranges = Vec::new();
+            for selection in editor.selections.all::<MultiBufferOffset>(&display_map) {
+                // Kakoune selections always cover at least one character.
+                let end = if selection.start == selection.end {
+                    movement::chars_after(&display_map, selection.end)
+                        .next()
+                        .map_or(selection.end, |(_, char_range)| char_range.end)
+                } else {
+                    selection.end
+                };
+                nested_ranges(
+                    &display_map,
+                    selection.start..end,
+                    kind,
+                    around,
+                    &mut new_ranges,
+                );
+            }
+            if new_ranges.is_empty() {
+                return;
+            }
+            editor.change_selections(Default::default(), window, cx, |s| {
+                s.select_ranges(new_ranges);
+            });
+        });
+    }
+
     /// A punctuation character entered during an object selection acts as
     /// the delimiter: the object spans from the previous occurrence (or the
     /// one under the cursor) to the next one.
@@ -2784,6 +2981,47 @@ mod test {
             tˇwo"},
             Mode::KakouneNormal,
         );
+    }
+
+    #[gpui::test]
+    async fn test_nested_object_selection(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `alt-I w` selects every word within the selection; `alt-A w` also
+        // takes the trailing blanks.
+        cx.set_state("«one, two threeˇ» rest", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-i w");
+        cx.assert_state("«oneˇ», «twoˇ» «threeˇ» rest", Mode::KakouneNormal);
+
+        cx.set_state("«one, two threeˇ» rest", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-a w");
+        cx.assert_state("«oneˇ», «two ˇ»«threeˇ» rest", Mode::KakouneNormal);
+
+        // Brackets select the top-level balanced regions; a count picks a
+        // nesting depth.
+        cx.set_state("«(a) x (b(c))ˇ» end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-a b");
+        cx.assert_state("«(a)ˇ» x «(b(c))ˇ» end", Mode::KakouneNormal);
+
+        cx.set_state("«(a) x (b(c))ˇ» end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("2 alt-shift-i b");
+        cx.assert_state("(a) x (b(«cˇ»)) end", Mode::KakouneNormal);
+
+        // Quotes alternate between opening and closing a region.
+        cx.set_state("«'a' x 'b'ˇ» end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-i q");
+        cx.assert_state("'«aˇ»' x '«bˇ»' end", Mode::KakouneNormal);
+
+        // Numbers within the selection.
+        cx.set_state("«a 12, b -3.4ˇ» 5", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-a n");
+        cx.assert_state("a «12ˇ», b «-3.4ˇ» 5", Mode::KakouneNormal);
+
+        // Punctuation delimiters work nested too.
+        cx.set_state("«a/b/c/dˇ» end", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-i /");
+        cx.assert_state("a/«bˇ»/c/«dˇ» end", Mode::KakouneNormal);
     }
 
     #[gpui::test]
