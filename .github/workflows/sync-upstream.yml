@@ -1,0 +1,175 @@
+# Keeps the `kakoune-mode-v2` branch rebased on top of zed-industries/zed.
+#
+# IMPORTANT: this file must live on the fork's DEFAULT branch (main).
+# GitHub only fires `schedule` triggers from a repository's default branch,
+# so even though the job operates on `kakoune-mode-v2`, the workflow itself
+# has to be committed to `main`.
+#
+# On every run it:
+#   1. Fast-forwards the fork's `main` from upstream (best effort).
+#   2. Rebases `kakoune-mode-v2` onto the fresh `upstream/main`.
+#        - rebase conflicts        -> open/refresh an alert issue, push nothing
+#        - rebase clean, tests fail -> open/refresh an alert issue, push nothing
+#        - rebase clean, tests pass -> force-push the rebased branch
+name: Sync upstream
+
+on:
+  schedule:
+    # Daily at 06:00 UTC. Adjust the cadence here.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+# Never let two syncs run at once (they would fight over the force-push).
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the rebased branch and the main mirror
+  issues: write # open/refresh the alert issue
+
+env:
+  WORK_BRANCH: kakoune-mode-v2
+  UPSTREAM: https://github.com/zed-industries/zed.git
+  # Crates gating the sync. Edit this list to widen/narrow coverage.
+  # `-p zed` pulls in most of the app, so dropping it (and `editor`) is the
+  # easy way to make runs much cheaper if the full build is too heavy.
+  TEST_CRATES: "-p vim -p editor -p settings -p settings_content -p settings_ui -p vim_mode_setting -p zed"
+
+jobs:
+  sync:
+    # Guard against ever running on the upstream repo itself.
+    if: github.repository_owner != 'zed-industries'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout work branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.WORK_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch --no-tags upstream main
+
+      - name: Mirror main from upstream (best effort)
+        run: |
+          # Fast-forward only; never force, so a diverged fork main is left
+          # untouched rather than silently rewritten.
+          git push origin upstream/main:main || \
+            echo "::notice::Could not fast-forward fork main; leaving it as is."
+
+      - name: Rebase work branch onto upstream
+        id: rebase
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Branch already contains upstream/main; nothing to do."
+            echo "result=uptodate" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git rebase upstream/main; then
+            echo "result=rebased" >> "$GITHUB_OUTPUT"
+          else
+            git rebase --abort || true
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free up disk space
+        if: steps.rebase.outputs.result == 'rebased'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/.ghcup
+          sudo docker image prune --all --force || true
+
+      - name: Install system dependencies
+        if: steps.rebase.outputs.result == 'rebased'
+        run: ./script/linux
+
+      - name: Cache Rust build
+        if: steps.rebase.outputs.result == 'rebased'
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Keep one cache shared across runs of this branch.
+          shared-key: sync-upstream
+          cache-on-failure: true
+
+      - name: Run tests
+        id: test
+        if: steps.rebase.outputs.result == 'rebased'
+        continue-on-error: true
+        run: cargo test --locked ${{ env.TEST_CRATES }}
+
+      - name: Push rebased branch
+        if: steps.rebase.outputs.result == 'rebased' && steps.test.outcome == 'success'
+        run: git push --force-with-lease origin "$WORK_BRANCH"
+
+      - name: Alert on conflict or test failure
+        if: >-
+          steps.rebase.outputs.result == 'conflict' ||
+          (steps.rebase.outputs.result == 'rebased' && steps.test.outcome == 'failure')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const conflict = '${{ steps.rebase.outputs.result }}' === 'conflict';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = conflict
+              ? 'Upstream sync needs manual rebase'
+              : 'Upstream sync passed rebase but tests failed';
+            const body = conflict
+              ? [
+                  `Rebasing \`${process.env.WORK_BRANCH}\` onto \`upstream/main\` hit conflicts that need manual resolution. The branch was **not** changed.`,
+                  '',
+                  '```',
+                  'git fetch upstream main',
+                  `git switch ${process.env.WORK_BRANCH}`,
+                  'git rebase upstream/main   # resolve conflicts, then',
+                  `git push --force-with-lease`,
+                  '```',
+                  '',
+                  `Run: ${runUrl}`,
+                ].join('\n')
+              : [
+                  `\`${process.env.WORK_BRANCH}\` rebased cleanly onto \`upstream/main\`, but the test suite failed, so the rebase was **not** pushed (your branch is unchanged).`,
+                  '',
+                  'Upstream likely changed something your work depends on. Reproduce locally with:',
+                  '',
+                  '```',
+                  'git fetch upstream main',
+                  `git switch ${process.env.WORK_BRANCH}`,
+                  'git rebase upstream/main',
+                  `cargo test ${process.env.TEST_CRATES}`,
+                  '```',
+                  '',
+                  `Run (full logs): ${runUrl}`,
+                ].join('\n');
+
+            const label = 'upstream-sync';
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label,
+            });
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body: `### ${title}\n\n${body}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [label],
+              });
+            }
