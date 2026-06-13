@@ -5,6 +5,7 @@
 //! has no select mode: selections are extended per-keystroke with
 //! Shift-modified movement keys instead.
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use editor::display_map::{DisplaySnapshot, ToDisplayPoint};
@@ -108,6 +109,17 @@ actions!(
 pub struct KakouneRotateMain {
     #[serde(default)]
     backward: bool,
+}
+
+/// Sets the search pattern from the selections (Kakoune's `*`/`alt-*`).
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
+#[action(namespace = vim)]
+#[serde(deny_unknown_fields)]
+pub struct KakouneSearchPattern {
+    /// Wrap word-boundary `\b` assertions around selections that sit on word
+    /// boundaries (`*`); when false the pattern is verbatim (`alt-*`).
+    #[serde(default)]
+    smart: bool,
 }
 
 /// Rotates the contents of the selections, in groups of `count` selections
@@ -409,6 +421,13 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     Vim::action(
         editor,
         cx,
+        |vim, action: &KakouneSearchPattern, window, cx| {
+            vim.kakoune_search_pattern(action.smart, window, cx);
+        },
+    );
+    Vim::action(
+        editor,
+        cx,
         |vim, action: &KakouneRotateContent, window, cx| {
             vim.kakoune_rotate_content(action.backward, window, cx);
         },
@@ -625,6 +644,19 @@ fn matching_range(
 
 fn char_at(map: &DisplaySnapshot, offset: MultiBufferOffset) -> Option<char> {
     movement::chars_after(map, offset).next().map(|(c, _)| c)
+}
+
+/// Escapes the regex metacharacters Kakoune escapes when turning a selection
+/// into a search pattern.
+fn regex_escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        if "^$\\.*+?()[]{}|".contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
 }
 
 fn previous_char_start(
@@ -1129,6 +1161,77 @@ impl Vim {
                 })
             });
         });
+    }
+
+    /// Kakoune's `*`/`alt-*`: build a search pattern from the selections and
+    /// set it on the search bar (which `n`/`N` consume), without moving the
+    /// cursor or taking focus from the document. With `smart`, selections
+    /// that sit on word boundaries are wrapped with `\b`.
+    fn kakoune_search_pattern(&mut self, smart: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let pattern = self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let buffer = display_map.buffer_snapshot();
+            let mut seen = HashSet::new();
+            let mut parts = Vec::new();
+            for selection in editor.selections.all::<MultiBufferOffset>(&display_map) {
+                if selection.start >= selection.end {
+                    continue;
+                }
+                let text: String = buffer.text_for_range(selection.start..selection.end).collect();
+                let mut part = String::new();
+                // Beginning-of-word: the first selected char is a word char
+                // preceded by a non-word char (or the buffer start).
+                let bow = smart
+                    && char_at(&display_map, selection.start).is_some_and(is_word)
+                    && previous_char_start(&display_map, selection.start)
+                        .and_then(|offset| char_at(&display_map, offset))
+                        .is_none_or(|c| !is_word(c));
+                // End-of-word: the last selected char is a word char followed
+                // by a non-word char (or the buffer end).
+                let eow = smart
+                    && previous_char_start(&display_map, selection.end)
+                        .and_then(|offset| char_at(&display_map, offset))
+                        .is_some_and(is_word)
+                    && char_at(&display_map, selection.end).is_none_or(|c| !is_word(c));
+                if bow {
+                    part.push_str("\\b");
+                }
+                part.push_str(&regex_escape(&text));
+                if eow {
+                    part.push_str("\\b");
+                }
+                if seen.insert(part.clone()) {
+                    parts.push(part);
+                }
+            }
+            parts.join("|")
+        });
+        let Some(pattern) = pattern.filter(|pattern| !pattern.is_empty()) else {
+            return;
+        };
+
+        let Some(pane) = self.pane(window, cx) else {
+            return;
+        };
+        pane.update(cx, |pane, cx| {
+            let Some(search_bar) = pane.toolbar().read(cx).item_of_type::<BufferSearchBar>() else {
+                return;
+            };
+            search_bar.update(cx, |search_bar, cx| {
+                if !search_bar.show(window, cx) {
+                    return;
+                }
+                let mut options = SearchOptions::REGEX;
+                if EditorSettings::get_global(cx).search.case_sensitive {
+                    options |= SearchOptions::CASE_SENSITIVE;
+                }
+                // Compute matches but keep focus in the document.
+                drop(search_bar.search(&pattern, Some(options), true, window, cx));
+                search_bar.focus_editor(&Default::default(), window, cx);
+            });
+        });
+        Vim::globals(cx).registers.insert('/', pattern.into());
     }
 
     /// `/` selects the next match; `?` extends the current selection up to
@@ -3788,6 +3891,50 @@ mod test {
         cx.set_state("ˇone\n    ˇtwo\n  ˇthree", Mode::KakouneNormal);
         cx.simulate_keystrokes("2 alt-&");
         cx.assert_state("    ˇone\n    ˇtwo\n    ˇthree", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_search_pattern(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        let query = |cx: &mut VimTestContext| {
+            cx.workspace(|workspace, _, cx| {
+                workspace
+                    .active_pane()
+                    .read(cx)
+                    .toolbar()
+                    .read(cx)
+                    .item_of_type::<search::BufferSearchBar>()
+                    .map(|bar| bar.read(cx).query(cx))
+            })
+        };
+
+        // `*` sets the pattern from the selection, with word-boundary
+        // assertions, and feeds `n` without moving the cursor.
+        cx.set_state("«twoˇ» one two three two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("*");
+        assert_eq!(query(&mut cx).as_deref(), Some("\\btwo\\b"));
+        // The cursor did not move; focus stays in the document.
+        cx.assert_state("«twoˇ» one two three two", Mode::KakouneNormal);
+        cx.run_until_parked();
+        cx.simulate_keystrokes("n");
+        cx.assert_state("two one «twoˇ» three two", Mode::KakouneNormal);
+
+        // Boundaries are detected per edge: a selection at the end of a word
+        // gets a trailing `\b` but no leading one.
+        cx.set_state("th«isˇ» island", Mode::KakouneNormal);
+        cx.simulate_keystrokes("*");
+        assert_eq!(query(&mut cx).as_deref(), Some("is\\b"));
+        // A selection internal to a word on both edges gets no assertions.
+        cx.set_state("is«laˇ»nd", Mode::KakouneNormal);
+        cx.simulate_keystrokes("*");
+        assert_eq!(query(&mut cx).as_deref(), Some("la"));
+
+        // `alt-*` escapes regex metacharacters verbatim, without boundaries.
+        cx.set_state("«a.bˇ» a.b axb", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-*");
+        assert_eq!(query(&mut cx).as_deref(), Some("a\\.b"));
     }
 
     #[gpui::test]
