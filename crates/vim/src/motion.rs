@@ -754,7 +754,12 @@ impl Vim {
 
             Mode::HelixNormal => self.helix_normal_motion(motion, count, window, cx),
             Mode::HelixSelect => self.helix_select_motion(motion, count, window, cx),
-            Mode::KakouneNormal => self.kakoune_motion(motion, count, find_extend, window, cx),
+            Mode::KakouneNormal => {
+                self.kakoune_motion(motion, count, find_extend, window, cx);
+                // A motion ends a one-shot `alt-;` normal command, returning
+                // to insert. Vim's `normal_motion` does this itself.
+                self.exit_temporary_normal(window, cx);
+            }
         }
         self.clear_operator(window, cx);
         if let Some(operator) = waiting_operator {
