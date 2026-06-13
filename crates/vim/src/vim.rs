@@ -1599,6 +1599,12 @@ impl Vim {
                     mode = "literal".to_string();
                 } else {
                     mode = "waiting".to_string();
+                    // The kakoune object operator waits (so that punctuation
+                    // delimiters reach `input_ignored`) but still binds its named
+                    // object keys through its keymap section.
+                    if matches!(active_operator, Operator::KakouneObject { .. }) {
+                        operator_id = active_operator.id();
+                    }
                 }
             } else if matches!(
                 active_operator,
@@ -2333,6 +2339,17 @@ impl Vim {
                 }
                 _ => self.clear_operator(window, cx),
             },
+            Some(Operator::KakouneObject { around, target }) => {
+                self.clear_operator(window, cx);
+                // Any punctuation character acts as the object delimiter.
+                if let Some(ch) = text.chars().next()
+                    && !ch.is_alphanumeric()
+                    && ch != '_'
+                    && !ch.is_whitespace()
+                {
+                    self.kakoune_delimiter_object(ch, around, target, window, cx);
+                }
+            }
             Some(Operator::Mark) => self.create_mark(text, window, cx),
             Some(Operator::RecordRegister) => {
                 self.record_register(text.chars().next().unwrap(), window, cx)
