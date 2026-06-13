@@ -19,6 +19,7 @@ use crate::{
     indent::IndentDirection,
     motion::{self, Motion, first_non_whitespace, next_line_end, right},
     object::Object,
+    kakoune::NestedObjectKind,
     state::{KakouneObjectTarget, Mark, Mode, Operator},
     surrounds::SurroundsType,
 };
@@ -582,6 +583,42 @@ impl Vim {
                     self.kakoune_select_object_bound(object, around, true, extend, window, cx)
                 }
             },
+            Some(Operator::KakouneNestedObject { around }) => {
+                // A count selects the objects nested that many levels deep.
+                let depth = times.map_or(0, |times| times.saturating_sub(1));
+                let kind = match object {
+                    Object::Word { ignore_punctuation } => {
+                        Some(NestedObjectKind::Word { ignore_punctuation })
+                    }
+                    Object::Parentheses => Some(NestedObjectKind::Pair {
+                        open: '(',
+                        close: ')',
+                        depth,
+                    }),
+                    Object::CurlyBrackets => Some(NestedObjectKind::Pair {
+                        open: '{',
+                        close: '}',
+                        depth,
+                    }),
+                    Object::SquareBrackets => Some(NestedObjectKind::Pair {
+                        open: '[',
+                        close: ']',
+                        depth,
+                    }),
+                    Object::AngleBrackets => Some(NestedObjectKind::Pair {
+                        open: '<',
+                        close: '>',
+                        depth,
+                    }),
+                    Object::DoubleQuotes => Some(NestedObjectKind::Delimiter('"')),
+                    Object::Quotes => Some(NestedObjectKind::Delimiter('\'')),
+                    Object::BackQuotes => Some(NestedObjectKind::Delimiter('`')),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    self.kakoune_nested_object(kind, around, window, cx);
+                }
+            }
             Some(Operator::DeleteSurrounds) => {
                 waiting_operator = Some(Operator::DeleteSurrounds);
             }
