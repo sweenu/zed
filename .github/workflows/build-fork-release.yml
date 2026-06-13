@@ -1,12 +1,12 @@
-# Builds an installable Linux bundle of "upstream stable release + kakoune
-# mode" whenever upstream publishes a new release, and publishes it as a
-# Release on the fork.
+# Builds an installable Linux bundle of the kakoune-mode fork whenever upstream
+# publishes a new release, and publishes it as a Release on the fork.
 #
-# Unlike a rolling build, this does NOT bundle the branch as-is. It takes your
-# kakoune commits (everything on `kakoune-mode-v2` that isn't in upstream main)
-# and replays them onto the upstream *release tag*, then builds that. Because
-# the release line is older than main, this rebase can conflict independently
-# of the daily main sync; when it does, the run alerts and builds nothing.
+# This is a ROLLING build: it bundles `kakoune-mode-v2` as it currently stands
+# (upstream main + kakoune mode), using each upstream release only as the build
+# cadence and version label. It always compiles, because it's exactly the
+# branch you develop and test against. It is NOT "upstream stable + kakoune" —
+# that was tried and fails to compile whenever main and the stable release
+# differ on an API the kakoune code touches.
 #
 # Like the sync workflow, this must live on the fork's DEFAULT branch (main)
 # so the `schedule` trigger fires.
@@ -28,15 +28,14 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # push the release tag and create the release
-  issues: write # alert when the replay onto the release tag conflicts
+  contents: write # create the fork release
+  issues: write # alert if the build fails
 
 env:
   WORK_BRANCH: kakoune-mode-v2
-  UPSTREAM: https://github.com/zed-industries/zed.git
 
 jobs:
-  # Cheap job: is there a new upstream stable release we haven't built yet?
+  # Cheap job: is there a new upstream release we haven't built yet?
   check:
     if: github.repository_owner != 'zed-industries'
     runs-on: ubuntu-latest
@@ -50,7 +49,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # `releases/latest` is the most recent non-prerelease, i.e. stable.
           upstream_tag=$(gh api repos/zed-industries/zed/releases/latest --jq .tag_name)
           release_tag="kakoune-${upstream_tag}"
           echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
@@ -80,118 +78,74 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.WORK_BRANCH }}
-          fetch-depth: 0 # full history, to replay kakoune commits onto the tag
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Configure git identity
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Replay kakoune commits onto the release tag
-        id: replay
-        run: |
-          set -euo pipefail
-          git remote add upstream "$UPSTREAM"
-          git fetch --no-tags upstream main
-          git fetch --no-tags upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
-          # The kakoune commits are everything on the work branch past where it
-          # diverged from main.
-          base=$(git merge-base upstream/main HEAD)
-          git checkout -b fork-build HEAD
-          if git rebase --onto "refs/tags/${UPSTREAM_TAG}" "$base" fork-build; then
-            echo "result=ok" >> "$GITHUB_OUTPUT"
-          else
-            git rebase --abort || true
-            echo "result=conflict" >> "$GITHUB_OUTPUT"
-          fi
+          fetch-depth: 1
 
       - name: Free up disk space
-        if: steps.replay.outputs.result == 'ok'
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force || true
 
       - name: Install system dependencies
-        if: steps.replay.outputs.result == 'ok'
         run: ./script/linux
 
       - name: Download WASI SDK
-        if: steps.replay.outputs.result == 'ok'
         run: ./script/download-wasi-sdk
 
       - name: Cache Rust build
-        if: steps.replay.outputs.result == 'ok'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: bundle-linux
           cache-on-failure: true
 
       - name: Force a coexisting channel
-        if: steps.replay.outputs.result == 'ok'
-        # Build as the `dev` channel (working-tree only, not committed) so the
-        # artifact installs alongside an official stable Zed and is never
-        # touched by Zed's auto-updater. The code is still the stable release.
+        # Build as the `dev` channel so the artifact installs alongside an
+        # official Zed and is never touched by Zed's auto-updater.
         run: echo dev > crates/zed/RELEASE_CHANNEL
 
       - name: Bundle Linux release
-        if: steps.replay.outputs.result == 'ok'
         env:
           CC: clang
           CXX: clang++
         run: ./script/bundle-linux
 
       - name: Publish fork release
-        if: steps.replay.outputs.result == 'ok'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           arch=$(uname -m)
-          # Tag the exact built source (release tag + kakoune commits) so the
-          # release is reproducible. RELEASE_CHANNEL is left dirty in the tree,
-          # so the tag reflects the real source, not the build-time override.
-          git tag "$RELEASE_TAG" fork-build
-          git push origin "refs/tags/${RELEASE_TAG}"
           cat > release-notes.md <<EOF
-          Installable Linux build of **upstream ${UPSTREAM_TAG} + kakoune mode**.
+          Installable Linux build of the kakoune-mode fork.
 
-          Your kakoune commits were replayed onto the upstream stable release tag
-          \`${UPSTREAM_TAG}\` and bundled. Built as the \`dev\` channel so it
-          installs alongside an official Zed and is not auto-updated.
+          Built from \`${WORK_BRANCH}\` (upstream main + kakoune mode) at the time
+          upstream published **${UPSTREAM_TAG}**. This tracks main, not the
+          upstream stable line, so treat it as a rolling build. Built as the
+          \`dev\` channel so it installs alongside an official Zed.
 
           To install: download \`zed-linux-${arch}.tar.gz\`, extract it, and run the
           \`zed\` binary inside.
           EOF
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
+            --target "$WORK_BRANCH" \
             --title "Kakoune Zed (${UPSTREAM_TAG})" \
             --notes-file release-notes.md \
             "target/release/zed-linux-${arch}.tar.gz" \
             "target/zed-remote-server-linux-${arch}.gz"
 
-      - name: Alert on replay conflict
-        if: steps.replay.outputs.result == 'conflict'
+      - name: Alert on build failure
+        if: failure()
         uses: actions/github-script@v7
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const tag = process.env.UPSTREAM_TAG;
-            const title = `Cannot build ${tag} + kakoune: replay conflicts`;
+            const title = `Fork release build failed for ${tag}`;
             const body = [
-              `Replaying the kakoune commits onto the upstream release tag \`${tag}\` hit conflicts, so no build was produced. The release line is older than main, so this can conflict even when the daily main sync is clean.`,
+              `Building \`${process.env.WORK_BRANCH}\` for upstream ${tag} failed, so no artifact was published.`,
               '',
-              'Resolve and build manually with:',
-              '',
-              '```',
-              `git fetch upstream main "refs/tags/${tag}:refs/tags/${tag}"`,
-              `base=$(git merge-base upstream/main ${process.env.WORK_BRANCH})`,
-              `git switch -c fork-build ${process.env.WORK_BRANCH}`,
-              `git rebase --onto "refs/tags/${tag}" "$base"   # resolve conflicts`,
-              'echo dev > crates/zed/RELEASE_CHANNEL',
-              './script/download-wasi-sdk && ./script/bundle-linux',
-              '```',
+              'A rolling build normally always compiles, so this usually means a recent upstream main change broke the build before the daily sync caught it. Check the run logs.',
               '',
               `Run: ${runUrl}`,
             ].join('\n');
