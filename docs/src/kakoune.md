@@ -23,7 +23,7 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 - Alignment: `&` aligns selections in per-line column groups, and `alt-&` copies the main selection's indentation to all selected lines.
 - Selection marks: `Z` saves the selections, `z` restores them, and the `alt-z`/`alt-Z` menus combine the saved and current selections (append, union, intersection, leftmost/rightmost cursor, longest/shortest).
 - Selection history: `alt-u` undoes the last selection change, `alt-U` redoes it.
-- Object selection: `alt-i`/`alt-a` followed by an object key, and `[`/`]`/`{`/`}` to select or extend to an object's start or end.
+- Object selection: `alt-i`/`alt-a` followed by an object key (where any punctuation character acts as a delimiter, like `alt-a /`), `[`/`]`/`{`/`}` to select or extend to an object's start or end, and `alt-I`/`alt-A` to select every object within each selection.
 - Changes: `i`, `a`, `I`, `A`, `o`, `O`, `alt-o`, `alt-O`, `d`, `alt-d`, `c`, `alt-c`, `y`, `p`, `P`, `r`, `R`, `alt-j`, `alt-J`, `<`, `>`, `alt-<`, `alt->`, `u`, `U`, `` ` ``, `~`, ``alt-` ``, and paste-all with `alt-p`/`alt-P`/`alt-R`.
 - Search: `/` selects the next match, `?` extends to it, `n`/`N` select or add the next match (`alt-n`/`alt-N` for the previous one), and `*` sets the search pattern from the selection.
 - Macros on `Q` (record) and `q` (replay), and registers via `"`.
@@ -40,7 +40,7 @@ Zed's Vim binding for the same key):
 - `ctrl-j` and `ctrl-k` (move forward/backward in the changes history).
 - `ctrl-s` saves the file instead of recording a jump point; `ctrl-o`/`ctrl-i` jump navigation itself works.
 - `alt-*` (set the search pattern verbatim); `*` works.
-- The custom (`c`) text object, the `alt-A`/`alt-I` nested object selections, and punctuation characters as object delimiters (such as `alt-a /`).
+- The custom (`c`) text object. The nested selections of `alt-A`/`alt-I` support words, numbers, whitespace, quotes, brackets, and punctuation delimiters, but not sentences, paragraphs, indents, or arguments.
 - In insert mode, `alt-;` (one-shot normal command) and `ctrl-u` (commit an undo group) are not implemented; Zed's own insert and completion keys apply instead.
 
 Behavioral differences:
