@@ -30,6 +30,7 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 - View commands: `v` followed by `v`/`c` (center), `m` (center horizontally), `t` (top), `b` (bottom), `j`/`k` (scroll lines), `h`/`l` (scroll columns), or `<`/`>` (cursor to the window's leftmost/rightmost column), and `V` to lock the view mode until escape.
 - `\` disables hooks for the next command: autoindent is suppressed (including for a whole insert session, as in `\i`), and saving with `:w` or `ctrl-s` skips the formatter.
 - Insert-mode commands: `alt-;` escapes to normal mode for a single command, and `ctrl-o` toggles automatic completion.
+- `:` opens Zed's command palette, where Vim-style ex commands such as `:w`, `:q`, `:wq`, and `:e` are recognized.
 
 ## Known deviations
 
@@ -50,6 +51,7 @@ Behavioral differences:
 - `.` uses Vim's repeat-last-change rather than Kakoune's repeat-last-insert, and `alt-.` repeats only `f`/`t` finds, not object selections.
 - Instead of Kakoune's `aligntab` option, `&` pads with tabs when the buffer's language uses `hard_tabs`.
 - Like Kakoune, `space` ships without default bindings; define your own user-mode style chords in your keymap with the `vim_mode == kakoune_normal` context.
+- Kakoune's command language (`:write`, `:edit`, `:set-option`, `%sh{...}`, etc.) is not implemented. `:` instead opens Zed's command palette, which recognizes Vim-style ex commands (`:w`, `:q`, and so on).
 - In the lock view mode, keys other than the view keys execute their normal binding and leave the mode, instead of being ignored.
 - `\` covers autoindent and format-on-save; it does not suppress bracket auto-closing or completions.
 - Keys that Kakoune leaves unbound may still do something in Zed, because Vim mode's base bindings apply wherever this mode doesn't override them.
