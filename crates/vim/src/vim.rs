@@ -1572,10 +1572,13 @@ impl Vim {
                 } else {
                     mode = "waiting".to_string();
                 }
-                // The kakoune object operator waits (so that punctuation
-                // delimiters reach `input_ignored`) but still binds its named
-                // object keys through its keymap section.
-                if matches!(active_operator, Operator::KakouneObject { .. }) {
+                // The kakoune object operators wait (so that punctuation
+                // delimiters reach `input_ignored`) but still bind their
+                // named object keys through their keymap section.
+                if matches!(
+                    active_operator,
+                    Operator::KakouneObject { .. } | Operator::KakouneNestedObject { .. }
+                ) {
                     operator_id = active_operator.id();
                 }
             } else {
@@ -2304,6 +2307,21 @@ impl Vim {
                     && !ch.is_whitespace()
                 {
                     self.kakoune_delimiter_object(ch, around, target, window, cx);
+                }
+            }
+            Some(Operator::KakouneNestedObject { around }) => {
+                self.clear_operator(window, cx);
+                if let Some(ch) = text.chars().next()
+                    && !ch.is_alphanumeric()
+                    && ch != '_'
+                    && !ch.is_whitespace()
+                {
+                    self.kakoune_nested_object(
+                        kakoune::NestedObjectKind::Delimiter(ch),
+                        around,
+                        window,
+                        cx,
+                    );
                 }
             }
             Some(Operator::Mark) => self.create_mark(text, window, cx),
