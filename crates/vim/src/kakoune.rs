@@ -89,6 +89,9 @@ actions!(
         /// Disables hooks (automatic behaviors like autoindent and format on
         /// save) for the next command.
         KakouneDisableHooks,
+        /// Toggles automatic completion on input (Kakoune's insert-mode
+        /// `ctrl-o`).
+        KakouneToggleCompletions,
         /// Selects the number under the cursor during an object selection.
         KakouneNumberObject,
         /// Selects the whitespace under the cursor during an object selection.
@@ -508,6 +511,16 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
                 }
                 _ => {}
             }
+        },
+    );
+    Vim::action(
+        editor,
+        cx,
+        |vim, _: &KakouneToggleCompletions, _, cx| {
+            vim.update_editor(cx, |_, editor, cx| {
+                let enabled = editor.show_completions_on_input(cx);
+                editor.set_show_completions_on_input(Some(!enabled));
+            });
         },
     );
     Vim::action(editor, cx, |vim, _: &KakouneDisableHooks, _, cx| {
@@ -3475,6 +3488,45 @@ mod test {
         cx.assert_state("one «two ˇ»three", Mode::KakouneNormal);
         cx.simulate_keystrokes("alt-shift-u");
         cx.assert_state("one «two ˇ»three", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_insert_one_shot_normal(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `alt-;` escapes to normal mode for a single command, then returns
+        // to insert mode.
+        cx.set_state("ˇone two", Mode::KakouneNormal);
+        cx.simulate_keystrokes("i a b");
+        cx.assert_state("abˇone two", Mode::Insert);
+        cx.simulate_keystrokes("alt-;");
+        assert_eq!(cx.mode(), Mode::KakouneNormal);
+        // A single motion runs, then insert mode resumes.
+        cx.simulate_keystrokes("l");
+        assert_eq!(cx.mode(), Mode::Insert);
+        cx.simulate_keystrokes("alt-;");
+        assert_eq!(cx.mode(), Mode::KakouneNormal);
+        // An operator likewise returns to insert after one command.
+        cx.simulate_keystrokes("d");
+        assert_eq!(cx.mode(), Mode::Insert);
+    }
+
+    #[gpui::test]
+    async fn test_toggle_completions(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        cx.set_state("ˇone", Mode::KakouneNormal);
+        cx.simulate_keystrokes("i");
+        let enabled = |cx: &mut VimTestContext| {
+            cx.update_editor(|editor, _, cx| editor.show_completions_on_input(cx))
+        };
+        let initial = enabled(&mut cx);
+        cx.simulate_keystrokes("ctrl-o");
+        assert_eq!(enabled(&mut cx), !initial);
+        cx.simulate_keystrokes("ctrl-o");
+        assert_eq!(enabled(&mut cx), initial);
     }
 
     #[gpui::test]
