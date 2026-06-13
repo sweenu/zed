@@ -5,12 +5,13 @@
 # so even though the job operates on `kakoune-mode-v2`, the workflow itself
 # has to be committed to `main`.
 #
-# On every run it:
-#   1. Fast-forwards the fork's `main` from upstream (best effort).
-#   2. Rebases `kakoune-mode-v2` onto the fresh `upstream/main`.
-#        - rebase conflicts        -> open/refresh an alert issue, push nothing
-#        - rebase clean, tests fail -> open/refresh an alert issue, push nothing
-#        - rebase clean, tests pass -> force-push the rebased branch
+# On every run it rebases `kakoune-mode-v2` onto the fresh `upstream/main`:
+#   - rebase conflicts        -> open/refresh an alert issue, push nothing
+#   - rebase clean, tests fail -> open/refresh an alert issue, push nothing
+#   - rebase clean, tests pass -> force-push the rebased branch
+#
+# `main` is NOT mirrored from upstream: it holds these workflow files, so it
+# is not a clean fast-forward of upstream/main. The branch is what matters.
 name: Sync upstream
 
 on:
@@ -25,16 +26,12 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # push the rebased branch and the main mirror
+  contents: write # force-push the rebased branch
   issues: write # open/refresh the alert issue
 
 env:
   WORK_BRANCH: kakoune-mode-v2
   UPSTREAM: https://github.com/zed-industries/zed.git
-  # Crates gating the sync. Edit this list to widen/narrow coverage.
-  # `-p zed` pulls in most of the app, so dropping it (and `editor`) is the
-  # easy way to make runs much cheaper if the full build is too heavy.
-  TEST_CRATES: "-p vim -p editor -p settings -p settings_content -p settings_ui -p vim_mode_setting -p zed"
 
 jobs:
   sync:
@@ -59,13 +56,6 @@ jobs:
         run: |
           git remote add upstream "$UPSTREAM"
           git fetch --no-tags upstream main
-
-      - name: Mirror main from upstream (best effort)
-        run: |
-          # Fast-forward only; never force, so a diverged fork main is left
-          # untouched rather than silently rewritten.
-          git push origin upstream/main:main || \
-            echo "::notice::Could not fast-forward fork main; leaving it as is."
 
       - name: Rebase work branch onto upstream
         id: rebase
@@ -104,7 +94,14 @@ jobs:
         id: test
         if: steps.rebase.outputs.result == 'rebased'
         continue-on-error: true
-        run: cargo test --locked ${{ env.TEST_CRATES }}
+        # Run the kakoune test suite (vim, which compiles editor/settings/etc.
+        # transitively), and compile-check the higher-level crates we touched
+        # that vim does not pull in — without running their unrelated, sometimes
+        # flaky upstream tests. This catches "upstream broke our work" while
+        # ignoring upstream's own test failures.
+        run: |
+          cargo test -p vim
+          cargo build -p zed -p settings_ui
 
       - name: Push rebased branch
         if: steps.rebase.outputs.result == 'rebased' && steps.test.outcome == 'success'
@@ -144,7 +141,7 @@ jobs:
                   'git fetch upstream main',
                   `git switch ${process.env.WORK_BRANCH}`,
                   'git rebase upstream/main',
-                  `cargo test ${process.env.TEST_CRATES}`,
+                  'cargo test -p vim && cargo build -p zed -p settings_ui',
                   '```',
                   '',
                   `Run (full logs): ${runUrl}`,
@@ -173,3 +170,9 @@ jobs:
                 labels: [label],
               });
             }
+
+      # `continue-on-error` above keeps the alert step reachable on a test
+      # failure; this makes the job itself go red so the failure is visible.
+      - name: Fail the job on test failure
+        if: steps.rebase.outputs.result == 'rebased' && steps.test.outcome == 'failure'
+        run: exit 1
