@@ -599,6 +599,8 @@
       "alt-shift-j": "vim::KakouneJoinSelectSpaces",
       ">": "vim::Indent",
       "<": "vim::Outdent",
+      "alt->": "vim::KakouneIndentIncludingEmpty",
+      "alt-<": "vim::KakouneOutdentKeepIncomplete",
       "u": "vim::Undo",
       "shift-u": "editor::Redo",
       "`": "vim::ConvertToLowerCase",
