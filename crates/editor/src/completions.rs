@@ -9,6 +9,19 @@ impl Editor {
         self.show_completions_on_input_override = show_completions_on_input;
     }
 
+    /// Whether automatic completion on input is currently enabled, accounting
+    /// for any override set via [`Editor::set_show_completions_on_input`].
+    pub fn show_completions_on_input(&self, cx: &App) -> bool {
+        if let Some(override_value) = self.show_completions_on_input_override {
+            return override_value;
+        }
+        let snapshot = self.buffer.read(cx).snapshot(cx);
+        let position = self.selections.newest_anchor().head();
+        snapshot
+            .language_settings_at(position, cx)
+            .show_completions_on_input
+    }
+
     pub fn text_layout_details(&self, window: &mut Window, cx: &mut App) -> TextLayoutDetails {
         TextLayoutDetails {
             text_system: window.text_system().clone(),
