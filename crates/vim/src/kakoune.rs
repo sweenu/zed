@@ -72,6 +72,9 @@ actions!(
         /// Copies the indentation of the main selection (or the count one) to
         /// all selected lines.
         KakouneCopyIndent,
+        /// Joins the selected lines and selects the spaces inserted in place
+        /// of the line breaks.
+        KakouneJoinSelectSpaces,
         /// Enters the lock view mode, where view keys can be repeated until
         /// escape.
         PushKakouneView,
@@ -395,6 +398,13 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     Vim::action(editor, cx, |vim, _: &KakouneCopyIndent, window, cx| {
         vim.kakoune_copy_indent(window, cx);
     });
+    Vim::action(
+        editor,
+        cx,
+        |vim, _: &KakouneJoinSelectSpaces, window, cx| {
+            vim.kakoune_join_select_spaces(window, cx);
+        },
+    );
     Vim::action(editor, cx, |vim, _: &PushKakouneView, window, cx| {
         vim.clear_operator(window, cx);
         vim.push_operator(Operator::KakouneView, window, cx);
@@ -1833,6 +1843,76 @@ impl Vim {
         self.kakoune_restoring_selections = false;
     }
 
+    /// Kakoune's `alt-J`: join the selected lines (or each cursor's line with
+    /// the next), replacing each line break and the following indentation
+    /// with a single space, and select the inserted spaces.
+    fn kakoune_join_select_spaces(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let buffer_snapshot = display_map.buffer_snapshot();
+            let max_row = buffer_snapshot.max_point().row;
+
+            let mut joins: Vec<Range<MultiBufferOffset>> = Vec::new();
+            for selection in editor.selections.all::<Point>(&display_map) {
+                let min_row = selection.start.row;
+                let max_row_in_selection = if selection.end.column == 0
+                    && selection.end.row > selection.start.row
+                {
+                    selection.end.row - 1
+                } else {
+                    selection.end.row
+                };
+                // A single-line selection joins its line with the next one;
+                // a multi-line selection joins the lines it covers.
+                let end_row = if min_row == max_row_in_selection {
+                    (max_row_in_selection + 1).min(max_row)
+                } else {
+                    max_row_in_selection
+                };
+                for row in min_row..end_row {
+                    let newline = Point::new(row, buffer_snapshot.line_len(MultiBufferRow(row)));
+                    let mut indent_len = 0;
+                    for c in buffer_snapshot.chars_at(Point::new(row + 1, 0)) {
+                        if c == ' ' || c == '\t' {
+                            indent_len += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    let range = buffer_snapshot.point_to_offset(newline)
+                        ..buffer_snapshot.point_to_offset(Point::new(row + 1, indent_len));
+                    if joins.last() != Some(&range) {
+                        joins.push(range);
+                    }
+                }
+            }
+            if joins.is_empty() {
+                return;
+            }
+
+            let edits: Vec<_> = joins
+                .iter()
+                .map(|range| (range.clone(), " ".to_string()))
+                .collect();
+            // Select each inserted space, adjusting for the length changes of
+            // the preceding replacements.
+            let mut new_ranges = Vec::new();
+            let mut removed = 0;
+            for range in &joins {
+                let start = MultiBufferOffset(range.start.0 - removed);
+                new_ranges.push(start..MultiBufferOffset(start.0 + 1));
+                removed += (range.end.0 - range.start.0) - 1;
+            }
+
+            editor.transact(window, cx, |editor, window, cx| {
+                editor.edit(edits, cx);
+                editor.change_selections(Default::default(), window, cx, |s| {
+                    s.select_ranges(new_ranges);
+                });
+            });
+        });
+    }
+
     /// Kakoune's `alt-&`: copy the indentation of the main selection's first
     /// line (or the count-th selection's, one-based) to every selected line.
     fn kakoune_copy_indent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3108,6 +3188,23 @@ mod test {
         cx.set_state("ˇone two", Mode::KakouneNormal);
         cx.simulate_keystrokes("alt-i space");
         cx.assert_state("ˇone two", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_join_select_spaces(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // A cursor joins its line with the next, selecting the space that
+        // replaced the line break and the next line's indentation.
+        cx.set_state("oˇne\n    two\nthree", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-j");
+        cx.assert_state("one« ˇ»two\nthree", Mode::KakouneNormal);
+
+        // A multi-line selection joins all the lines it covers.
+        cx.set_state("o«ne\ntwo\nthˇ»ree\nrest", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-shift-j");
+        cx.assert_state("one« ˇ»two« ˇ»three\nrest", Mode::KakouneNormal);
     }
 
     #[gpui::test]
