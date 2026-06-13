@@ -25,7 +25,7 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 - Selection history: `alt-u` undoes the last selection change, `alt-U` redoes it.
 - Object selection: `alt-i`/`alt-a` followed by an object key (where any punctuation character acts as a delimiter, like `alt-a /`), `[`/`]`/`{`/`}` to select or extend to an object's start or end, and `alt-I`/`alt-A` to select every object within each selection.
 - Changes: `i`, `a`, `I`, `A`, `o`, `O`, `alt-o`, `alt-O`, `d`, `alt-d`, `c`, `alt-c`, `y`, `p`, `P`, `r`, `R`, `alt-j`, `alt-J`, `<`, `>`, `alt-<`, `alt->`, `u`, `U`, `` ` ``, `~`, ``alt-` ``, and paste-all with `alt-p`/`alt-P`/`alt-R`.
-- Search: `/` selects the next match, `?` extends to it, `n`/`N` select or add the next match (`alt-n`/`alt-N` for the previous one), and `*` sets the search pattern from the selection.
+- Search: `/` selects the next match, `?` extends to it, `n`/`N` select or add the next match (`alt-n`/`alt-N` for the previous one), and `*`/`alt-*` set the search pattern from the selections (`*` adds word-boundary detection, `alt-*` is verbatim).
 - Macros on `Q` (record) and `q` (replay), and registers via `"`.
 - View commands: `v` followed by `v`/`c` (center), `m` (center horizontally), `t` (top), `b` (bottom), `j`/`k` (scroll lines), `h`/`l` (scroll columns), or `<`/`>` (cursor to the window's leftmost/rightmost column), and `V` to lock the view mode until escape.
 - `\` disables hooks for the next command: autoindent is suppressed (including for a whole insert session, as in `\i`), and saving with `:w` or `ctrl-s` skips the formatter.
@@ -41,7 +41,6 @@ Zed's Vim binding for the same key):
 - `+` and `alt-+` (duplicate selections, merge overlapping): Zed cannot represent overlapping selections. `+` currently falls back to Vim's next-line-start motion.
 - `ctrl-j` and `ctrl-k` (move forward/backward in the changes history).
 - `ctrl-s` saves the file instead of recording a jump point; `ctrl-o`/`ctrl-i` jump navigation itself works.
-- `alt-*` (set the search pattern verbatim); `*` works.
 - The custom (`c`) text object. The nested selections of `alt-A`/`alt-I` support words, numbers, whitespace, quotes, brackets, and punctuation delimiters, but not sentences, paragraphs, indents, or arguments.
 - In insert mode, `ctrl-u` (commit an undo group) is not implemented.
 
