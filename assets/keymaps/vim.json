@@ -718,6 +718,8 @@
       // Object selection
       "alt-a": ["vim::PushKakouneObject", { "around": true }],
       "alt-i": ["vim::PushKakouneObject", { "around": false }],
+      "alt-shift-a": ["vim::PushKakouneObject", { "around": true, "nested": true }],
+      "alt-shift-i": ["vim::PushKakouneObject", { "around": false, "nested": true }],
       "[": ["vim::PushKakouneObject", { "around": true, "to": "start" }],
       "]": ["vim::PushKakouneObject", { "around": true, "to": "end" }],
       "{": ["vim::PushKakouneObject", { "around": true, "to": "start", "extend": true }],
