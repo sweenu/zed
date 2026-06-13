@@ -32,10 +32,26 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 
 ## Known deviations
 
+Unimplemented keys (unless noted, they currently do nothing or fall back to
+Zed's Vim binding for the same key):
+
+- Shell-driven commands: `|`, `!`, `$`, and `@`/`alt-@` (tabs/spaces conversion).
+- `+` and `alt-+` (duplicate selections, merge overlapping): Zed cannot represent overlapping selections. `+` currently falls back to Vim's next-line-start motion.
+- `alt-J` (join lines and select the inserted spaces); plain `alt-j` works.
+- `alt->` and `alt-<` (indent including empty lines, unindent keeping incomplete indents).
+- `ctrl-j` and `ctrl-k` (move forward/backward in the changes history).
+- `ctrl-s` saves the file instead of recording a jump point; `ctrl-o`/`ctrl-i` jump navigation itself works.
+- `alt-*` (set the search pattern verbatim); `*` works.
+- The custom (`c`) text object, the `alt-A`/`alt-I` nested object selections, and punctuation characters as object delimiters (such as `alt-a /`).
+- In the view menus, `m` (center horizontally), `h`/`l` (scroll columns), and `<`/`>` are not bound.
+- In insert mode, `alt-;` (one-shot normal command) and `ctrl-u` (commit an undo group) are not implemented; Zed's own insert and completion keys apply instead.
+
+Behavioral differences:
+
 - Registers, macros, and marks use Vim's machinery rather than Kakoune's register semantics; `Z`/`z` use a single slot instead of the `^` register.
+- `.` uses Vim's repeat-last-change rather than Kakoune's repeat-last-insert, and `alt-.` repeats only `f`/`t` finds, not object selections.
 - Instead of Kakoune's `aligntab` option, `&` pads with tabs when the buffer's language uses `hard_tabs`.
-- The custom (`c`) text object is not implemented.
-- Shell-driven commands (`|`, `!`, `$`, `@`) are not implemented yet.
 - Like Kakoune, `space` ships without default bindings; define your own user-mode style chords in your keymap with the `vim_mode == kakoune_normal` context.
 - In the lock view mode, keys other than the view keys execute their normal binding and leave the mode, instead of being ignored.
 - `\` covers autoindent and format-on-save; it does not suppress bracket auto-closing or completions.
+- Keys that Kakoune leaves unbound may still do something in Zed, because Vim mode's base bindings apply wherever this mode doesn't override them.
