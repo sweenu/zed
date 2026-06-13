@@ -1599,6 +1599,11 @@ impl Vim {
         if self.kakoune_hooks_disabled.is_some() {
             context.add("kakoune_hooks_disabled");
         }
+        // Lets bindings target Kakoune mode in contexts where the vim mode
+        // string doesn't distinguish it, like insert mode.
+        if KakouneModeSetting::get_global(cx).0 {
+            context.add("kakoune_mode");
+        }
         context.set("vim_mode", mode);
         context.set("vim_operator", operator_id);
     }
