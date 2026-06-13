@@ -720,6 +720,11 @@
       "alt-shift-n": "vim::KakouneAddSelectionPrevious",
       "*": "buffer_search::UseSelectionForFind",
 
+      // Command prompt. Kakoune's command language is not implemented; this
+      // opens Zed's command palette, where Vim-style ex commands (`:w`,
+      // `:q`, `:wq`, `:e`, ...) are recognized.
+      ":": "command_palette::Toggle",
+
       // Macros — like Helix, Kakoune swaps Vim's q/Q: Q records, q replays
       "q": "vim::ReplayLastRecording",
       "shift-q": "vim::ToggleRecord",
