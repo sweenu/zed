@@ -141,6 +141,30 @@ enum CombineKind {
     SelectShortest,
 }
 
+/// Adjusts the horizontal scroll position (the view menu's `m`, `h`, `l`,
+/// `<`, and `>` keys).
+#[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
+#[action(namespace = vim)]
+#[serde(deny_unknown_fields)]
+pub struct KakouneScrollView {
+    kind: ScrollViewKind,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ScrollViewKind {
+    /// Center the main cursor horizontally.
+    Center,
+    /// Scroll the window `count` columns left.
+    Left,
+    /// Scroll the window `count` columns right.
+    Right,
+    /// Put the main cursor on the leftmost column of the window.
+    Leftmost,
+    /// Put the main cursor on the rightmost column of the window.
+    Rightmost,
+}
+
 /// Pastes every yanked selection at each selection and selects each pasted
 /// string (Kakoune's `alt-p`/`alt-P`/`alt-R`).
 #[derive(Clone, Deserialize, JsonSchema, PartialEq, Action)]
@@ -426,6 +450,9 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
     Vim::action(editor, cx, |vim, _: &PushKakouneView, window, cx| {
         vim.clear_operator(window, cx);
         vim.push_operator(Operator::KakouneView, window, cx);
+    });
+    Vim::action(editor, cx, |vim, action: &KakouneScrollView, window, cx| {
+        vim.kakoune_scroll_view(action.kind, window, cx);
     });
     Vim::action(
         editor,
@@ -1861,6 +1888,46 @@ impl Vim {
         self.kakoune_restoring_selections = false;
     }
 
+    /// Kakoune's view menu horizontal commands: center the cursor, scroll by
+    /// columns, or put the cursor on the window's leftmost/rightmost column.
+    fn kakoune_scroll_view(
+        &mut self,
+        kind: ScrollViewKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = Vim::take_count(cx).unwrap_or(1) as f64;
+        self.update_editor(cx, |_, editor, cx| {
+            let display_map = editor.display_snapshot(cx);
+            let cursor_column = editor
+                .selections
+                .newest_anchor()
+                .head()
+                .to_display_point(&display_map)
+                .column() as f64;
+            let mut position = editor.scroll_position(cx);
+            position.x = match kind {
+                ScrollViewKind::Left => position.x - count,
+                ScrollViewKind::Right => position.x + count,
+                ScrollViewKind::Center => {
+                    let Some(visible_columns) = editor.visible_column_count() else {
+                        return;
+                    };
+                    cursor_column - visible_columns / 2.
+                }
+                ScrollViewKind::Leftmost => cursor_column,
+                ScrollViewKind::Rightmost => {
+                    let Some(visible_columns) = editor.visible_column_count() else {
+                        return;
+                    };
+                    cursor_column - visible_columns + 1.
+                }
+            }
+            .max(0.);
+            editor.set_scroll_position(position, window, cx);
+        });
+    }
+
     /// Kakoune's `alt-J`: join the selected lines (or each cursor's line with
     /// the next), replacing each line break and the following indentation
     /// with a single space, and select the inserted spaces.
@@ -3018,6 +3085,34 @@ mod test {
 
         cx.simulate_keystrokes("escape");
         assert_eq!(cx.active_operator(), None);
+    }
+
+    #[gpui::test]
+    async fn test_view_scroll_columns(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        let long_line = "word ".repeat(100);
+        cx.set_state(&format!("ˇ{long_line}"), Mode::KakouneNormal);
+
+        let scroll_x = |cx: &mut VimTestContext| {
+            cx.update_editor(|editor, _, cx| editor.scroll_position(cx).x)
+        };
+        assert_eq!(scroll_x(&mut cx), 0.);
+
+        cx.simulate_keystrokes("v l");
+        assert_eq!(scroll_x(&mut cx), 1.);
+
+        // The lock view mode repeats scrolling until escape.
+        cx.simulate_keystrokes("shift-v l l l escape");
+        assert_eq!(scroll_x(&mut cx), 4.);
+
+        cx.simulate_keystrokes("v h");
+        assert_eq!(scroll_x(&mut cx), 3.);
+
+        // `v <` puts the cursor on the leftmost column.
+        cx.simulate_keystrokes("v <");
+        assert_eq!(scroll_x(&mut cx), 0.);
     }
 
     #[gpui::test]
