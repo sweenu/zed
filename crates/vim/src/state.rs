@@ -179,6 +179,10 @@ pub enum Operator {
         around: bool,
         target: KakouneObjectTarget,
     },
+    /// Selects every occurrence of the object within each selection.
+    KakouneNestedObject {
+        around: bool,
+    },
     /// Kakoune's lock view mode: stays active so view keys can be repeated
     /// until escape clears it.
     KakouneView,
@@ -1173,7 +1177,11 @@ impl Operator {
             Operator::HelixSurroundAdd => "helix_ms",
             Operator::HelixSurroundReplace { .. } => "helix_mr",
             Operator::HelixSurroundDelete => "helix_md",
-            Operator::KakouneObject { .. } => "kakoune_object",
+            // The nested variant shares the id so the same keymap section
+            // provides the object keys.
+            Operator::KakouneObject { .. } | Operator::KakouneNestedObject { .. } => {
+                "kakoune_object"
+            }
             Operator::KakouneView => "kakoune_view",
         }
     }
@@ -1258,7 +1266,7 @@ impl Operator {
             // Waiting suppresses the base vim bindings so that punctuation
             // delimiters reach `input_ignored`; the named object keys are
             // bound in a `vim_operator == kakoune_object` keymap section.
-            Operator::KakouneObject { .. } => true,
+            Operator::KakouneObject { .. } | Operator::KakouneNestedObject { .. } => true,
             Operator::HelixSurroundAdd
             | Operator::HelixSurroundReplace { .. }
             | Operator::HelixSurroundDelete => true,
@@ -1290,6 +1298,7 @@ impl Operator {
             | Operator::HelixNext { .. }
             | Operator::HelixPrevious { .. }
             | Operator::KakouneObject { .. }
+            | Operator::KakouneNestedObject { .. }
             | Operator::HelixSurroundAdd
             | Operator::HelixSurroundReplace { .. }
             | Operator::HelixSurroundDelete => true,
