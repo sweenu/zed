@@ -1253,8 +1253,11 @@ impl Operator {
             | Operator::HelixMatch
             | Operator::HelixNext { .. }
             | Operator::HelixPrevious { .. }
-            | Operator::KakouneObject { .. }
             | Operator::KakouneView => false,
+            // Waiting suppresses the base vim bindings so that punctuation
+            // delimiters reach `input_ignored`; the named object keys are
+            // bound in a `vim_operator == kakoune_object` keymap section.
+            Operator::KakouneObject { .. } => true,
             Operator::HelixSurroundAdd
             | Operator::HelixSurroundReplace { .. }
             | Operator::HelixSurroundDelete => true,
