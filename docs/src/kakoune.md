@@ -29,6 +29,7 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 - Macros on `Q` (record) and `q` (replay), and registers via `"`.
 - View commands: `v` followed by `v`/`c` (center), `m` (center horizontally), `t` (top), `b` (bottom), `j`/`k` (scroll lines), `h`/`l` (scroll columns), or `<`/`>` (cursor to the window's leftmost/rightmost column), and `V` to lock the view mode until escape.
 - `\` disables hooks for the next command: autoindent is suppressed (including for a whole insert session, as in `\i`), and saving with `:w` or `ctrl-s` skips the formatter.
+- Insert-mode commands: `alt-;` escapes to normal mode for a single command, and `ctrl-o` toggles automatic completion.
 
 ## Known deviations
 
@@ -41,7 +42,7 @@ Zed's Vim binding for the same key):
 - `ctrl-s` saves the file instead of recording a jump point; `ctrl-o`/`ctrl-i` jump navigation itself works.
 - `alt-*` (set the search pattern verbatim); `*` works.
 - The custom (`c`) text object. The nested selections of `alt-A`/`alt-I` support words, numbers, whitespace, quotes, brackets, and punctuation delimiters, but not sentences, paragraphs, indents, or arguments.
-- In insert mode, `alt-;` (one-shot normal command) and `ctrl-u` (commit an undo group) are not implemented; Zed's own insert and completion keys apply instead.
+- In insert mode, `ctrl-u` (commit an undo group) is not implemented.
 
 Behavioral differences:
 
