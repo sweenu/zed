@@ -698,10 +698,15 @@
       // escape.
       "v v": "editor::ScrollCursorCenter",
       "v c": "editor::ScrollCursorCenter",
+      "v m": ["vim::KakouneScrollView", { "kind": "center" }],
       "v t": "editor::ScrollCursorTop",
       "v b": "editor::ScrollCursorBottom",
       "v j": "vim::LineDown",
       "v k": "vim::LineUp",
+      "v h": ["vim::KakouneScrollView", { "kind": "left" }],
+      "v l": ["vim::KakouneScrollView", { "kind": "right" }],
+      "v <": ["vim::KakouneScrollView", { "kind": "leftmost" }],
+      "v >": ["vim::KakouneScrollView", { "kind": "rightmost" }],
       "shift-v": "vim::PushKakouneView",
 
       // Search
@@ -778,10 +783,15 @@
     "bindings": {
       "v": "editor::ScrollCursorCenter",
       "c": "editor::ScrollCursorCenter",
+      "m": ["vim::KakouneScrollView", { "kind": "center" }],
       "t": "editor::ScrollCursorTop",
       "b": "editor::ScrollCursorBottom",
       "j": "vim::LineDown",
       "k": "vim::LineUp",
+      "h": ["vim::KakouneScrollView", { "kind": "left" }],
+      "l": ["vim::KakouneScrollView", { "kind": "right" }],
+      "<": ["vim::KakouneScrollView", { "kind": "leftmost" }],
+      ">": ["vim::KakouneScrollView", { "kind": "rightmost" }],
       "escape": "vim::ClearOperators",
     },
   },
