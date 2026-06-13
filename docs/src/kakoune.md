@@ -24,10 +24,10 @@ For a detailed list of Kakoune's default keybindings, please visit the [official
 - Selection marks: `Z` saves the selections, `z` restores them, and the `alt-z`/`alt-Z` menus combine the saved and current selections (append, union, intersection, leftmost/rightmost cursor, longest/shortest).
 - Selection history: `alt-u` undoes the last selection change, `alt-U` redoes it.
 - Object selection: `alt-i`/`alt-a` followed by an object key, and `[`/`]`/`{`/`}` to select or extend to an object's start or end.
-- Changes: `i`, `a`, `I`, `A`, `o`, `O`, `alt-o`, `alt-O`, `d`, `alt-d`, `c`, `alt-c`, `y`, `p`, `P`, `r`, `R`, `alt-j`, `<`, `>`, `u`, `U`, `` ` ``, `~`, ``alt-` ``, and paste-all with `alt-p`/`alt-P`/`alt-R`.
+- Changes: `i`, `a`, `I`, `A`, `o`, `O`, `alt-o`, `alt-O`, `d`, `alt-d`, `c`, `alt-c`, `y`, `p`, `P`, `r`, `R`, `alt-j`, `alt-J`, `<`, `>`, `alt-<`, `alt->`, `u`, `U`, `` ` ``, `~`, ``alt-` ``, and paste-all with `alt-p`/`alt-P`/`alt-R`.
 - Search: `/` selects the next match, `?` extends to it, `n`/`N` select or add the next match (`alt-n`/`alt-N` for the previous one), and `*` sets the search pattern from the selection.
 - Macros on `Q` (record) and `q` (replay), and registers via `"`.
-- View commands: `v` followed by `v`/`c` (center), `t` (top), `b` (bottom), or `j`/`k` (scroll), and `V` to lock the view mode until escape.
+- View commands: `v` followed by `v`/`c` (center), `m` (center horizontally), `t` (top), `b` (bottom), `j`/`k` (scroll lines), `h`/`l` (scroll columns), or `<`/`>` (cursor to the window's leftmost/rightmost column), and `V` to lock the view mode until escape.
 - `\` disables hooks for the next command: autoindent is suppressed (including for a whole insert session, as in `\i`), and saving with `:w` or `ctrl-s` skips the formatter.
 
 ## Known deviations
@@ -37,13 +37,10 @@ Zed's Vim binding for the same key):
 
 - Shell-driven commands: `|`, `!`, `$`, and `@`/`alt-@` (tabs/spaces conversion).
 - `+` and `alt-+` (duplicate selections, merge overlapping): Zed cannot represent overlapping selections. `+` currently falls back to Vim's next-line-start motion.
-- `alt-J` (join lines and select the inserted spaces); plain `alt-j` works.
-- `alt->` and `alt-<` (indent including empty lines, unindent keeping incomplete indents).
 - `ctrl-j` and `ctrl-k` (move forward/backward in the changes history).
 - `ctrl-s` saves the file instead of recording a jump point; `ctrl-o`/`ctrl-i` jump navigation itself works.
 - `alt-*` (set the search pattern verbatim); `*` works.
 - The custom (`c`) text object, the `alt-A`/`alt-I` nested object selections, and punctuation characters as object delimiters (such as `alt-a /`).
-- In the view menus, `m` (center horizontally), `h`/`l` (scroll columns), and `<`/`>` are not bound.
 - In insert mode, `alt-;` (one-shot normal command) and `ctrl-u` (commit an undo group) are not implemented; Zed's own insert and completion keys apply instead.
 
 Behavioral differences:
