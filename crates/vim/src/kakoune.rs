@@ -75,6 +75,10 @@ actions!(
         /// Joins the selected lines and selects the spaces inserted in place
         /// of the line breaks.
         KakouneJoinSelectSpaces,
+        /// Indents the selected lines, including empty ones.
+        KakouneIndentIncludingEmpty,
+        /// Unindents the selected lines, keeping incomplete indentation.
+        KakouneOutdentKeepIncomplete,
         /// Enters the lock view mode, where view keys can be repeated until
         /// escape.
         PushKakouneView,
@@ -403,6 +407,20 @@ pub fn register(editor: &mut Editor, cx: &mut Context<Vim>) {
         cx,
         |vim, _: &KakouneJoinSelectSpaces, window, cx| {
             vim.kakoune_join_select_spaces(window, cx);
+        },
+    );
+    Vim::action(
+        editor,
+        cx,
+        |vim, _: &KakouneIndentIncludingEmpty, window, cx| {
+            vim.kakoune_indent_including_empty(window, cx);
+        },
+    );
+    Vim::action(
+        editor,
+        cx,
+        |vim, _: &KakouneOutdentKeepIncomplete, window, cx| {
+            vim.kakoune_outdent_keep_incomplete(window, cx);
         },
     );
     Vim::action(editor, cx, |vim, _: &PushKakouneView, window, cx| {
@@ -1913,6 +1931,89 @@ impl Vim {
         });
     }
 
+    /// Collects the rows covered by the selections, deduplicated, accounting
+    /// for full-line selections whose exclusive end sits on the next row.
+    fn kakoune_selected_rows(&self, editor: &mut Editor, cx: &mut Context<Editor>) -> Vec<u32> {
+        let display_map = editor.display_snapshot(cx);
+        let mut rows = Vec::new();
+        for selection in editor.selections.all::<Point>(&display_map) {
+            let end_row = if selection.end.column == 0 && selection.end.row > selection.start.row {
+                selection.end.row - 1
+            } else {
+                selection.end.row
+            };
+            rows.extend(selection.start.row..=end_row);
+        }
+        rows.sort_unstable();
+        rows.dedup();
+        rows
+    }
+
+    /// Kakoune's `alt->`: indent the selected lines, including empty ones
+    /// (which plain `>` skips).
+    fn kakoune_indent_including_empty(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let count = Vim::take_count(cx).unwrap_or(1);
+        self.update_editor(cx, |vim, editor, cx| {
+            let rows = vim.kakoune_selected_rows(editor, cx);
+            let display_map = editor.display_snapshot(cx);
+            let buffer_snapshot = display_map.buffer_snapshot();
+            let mut edits = Vec::new();
+            for row in rows {
+                let start = Point::new(row, 0);
+                let settings = buffer_snapshot.language_settings_at(start, cx);
+                let indent = if settings.hard_tabs {
+                    "\t".repeat(count)
+                } else {
+                    " ".repeat(settings.tab_size.get() as usize * count)
+                };
+                edits.push((start..start, indent));
+            }
+            if edits.is_empty() {
+                return;
+            }
+            editor.transact(window, cx, |editor, _, cx| {
+                editor.edit(edits, cx);
+            });
+        });
+    }
+
+    /// Kakoune's `alt-<`: unindent the selected lines, but leave incomplete
+    /// indentation in place (which plain `<` removes).
+    fn kakoune_outdent_keep_incomplete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let count = Vim::take_count(cx).unwrap_or(1) as u32;
+        self.update_editor(cx, |vim, editor, cx| {
+            let rows = vim.kakoune_selected_rows(editor, cx);
+            let display_map = editor.display_snapshot(cx);
+            let buffer_snapshot = display_map.buffer_snapshot();
+            let mut edits = Vec::new();
+            for row in rows {
+                let line_start = Point::new(row, 0);
+                let settings = buffer_snapshot.language_settings_at(line_start, cx);
+                let tab_size = settings.tab_size.get();
+                let target_width = tab_size * count;
+                let mut width = 0;
+                for (column, c) in buffer_snapshot.chars_at(line_start).enumerate() {
+                    match c {
+                        '\t' => width = (width / tab_size + 1) * tab_size,
+                        ' ' => width += 1,
+                        // The indentation ends before a full level: leave it.
+                        _ => break,
+                    }
+                    if width >= target_width {
+                        edits.push((line_start..Point::new(row, column as u32 + 1), String::new()));
+                        break;
+                    }
+                }
+            }
+            if edits.is_empty() {
+                return;
+            }
+            editor.transact(window, cx, |editor, _, cx| {
+                editor.edit(edits, cx);
+            });
+        });
+    }
+
     /// Kakoune's `alt-&`: copy the indentation of the main selection's first
     /// line (or the count-th selection's, one-based) to every selected line.
     fn kakoune_copy_indent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3205,6 +3306,24 @@ mod test {
         cx.set_state("o«ne\ntwo\nthˇ»ree\nrest", Mode::KakouneNormal);
         cx.simulate_keystrokes("alt-shift-j");
         cx.assert_state("one« ˇ»two« ˇ»three\nrest", Mode::KakouneNormal);
+    }
+
+    #[gpui::test]
+    async fn test_indent_variants(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // `alt->` indents empty lines too; plain strings because indoc would
+        // strip the indentation under test.
+        cx.set_state("o«ne\n\ntˇ»wo", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt->");
+        cx.assert_state("    o«ne\n    \n    tˇ»wo", Mode::KakouneNormal);
+
+        // `alt-<` removes one full indent level but leaves incomplete
+        // indentation in place.
+        cx.set_state("    o«ne\n  two\n        thˇ»ree", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-<");
+        cx.assert_state("o«ne\n  two\n    thˇ»ree", Mode::KakouneNormal);
     }
 
     #[gpui::test]
