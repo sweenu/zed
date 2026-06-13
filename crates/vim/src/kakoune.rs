@@ -2166,6 +2166,41 @@ impl Vim {
         });
     }
 
+    /// A punctuation character entered during an object selection acts as
+    /// the delimiter: the object spans from the previous occurrence (or the
+    /// one under the cursor) to the next one.
+    pub(crate) fn kakoune_delimiter_object(
+        &mut self,
+        delimiter: char,
+        around: bool,
+        target: KakouneObjectTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.kakoune_scanned_object(
+            target,
+            move |map, cursor| {
+                let open = if char_at(map, cursor) == Some(delimiter) {
+                    cursor
+                } else {
+                    movement::chars_before(map, cursor)
+                        .find(|(c, _)| *c == delimiter)
+                        .map(|(_, range)| range.start)?
+                };
+                let open_end = next_char_start(map, open)?;
+                let (_, close) = movement::chars_after(map, open_end)
+                    .find(|(c, _)| *c == delimiter)?;
+                if around {
+                    Some(open..close.end)
+                } else {
+                    Some(open_end..close.start)
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
     /// Applies an object selection whose range comes from a character scan
     /// around the cursor (the number and whitespace objects), honoring the
     /// pending object target like `normal_object` does for vim objects.
@@ -2749,6 +2784,32 @@ mod test {
             tˇwo"},
             Mode::KakouneNormal,
         );
+    }
+
+    #[gpui::test]
+    async fn test_punctuation_delimiter_object(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // The doc's example: on the `o` of `/home/bar`, `alt-a /` selects
+        // `/home/`.
+        cx.set_state("/hˇome/bar", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-a /");
+        cx.assert_state("«/home/ˇ»bar", Mode::KakouneNormal);
+
+        cx.set_state("/hˇome/bar", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-i /");
+        cx.assert_state("/«homeˇ»/bar", Mode::KakouneNormal);
+
+        // Works with any punctuation and with the bound targets.
+        cx.set_state("a, ˇb, c", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-i ,");
+        cx.assert_state("a,« bˇ», c", Mode::KakouneNormal);
+
+        // Without a matching pair, nothing happens.
+        cx.set_state("no delimˇiters here", Mode::KakouneNormal);
+        cx.simulate_keystrokes("alt-a /");
+        cx.assert_state("no delimˇiters here", Mode::KakouneNormal);
     }
 
     #[gpui::test]
