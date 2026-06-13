@@ -781,6 +781,16 @@
     },
   },
   {
+    "context": "vim_mode == insert && kakoune_mode",
+    "bindings": {
+      // Escape to normal mode for a single command.
+      "alt-;": "vim::TemporaryNormal",
+      // Kakoune's ctrl-o toggles automatic completion (the one-shot normal
+      // command that vim binds here is available as alt-; instead).
+      "ctrl-o": "vim::KakouneToggleCompletions",
+    },
+  },
+  {
     "context": "vim_operator == kakoune_view",
     "bindings": {
       "v": "editor::ScrollCursorCenter",
