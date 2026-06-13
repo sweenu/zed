@@ -706,7 +706,8 @@
       "alt-n": "vim::HelixSelectPrevious",
       "shift-n": "vim::KakouneAddSelectionNext",
       "alt-shift-n": "vim::KakouneAddSelectionPrevious",
-      "*": "buffer_search::UseSelectionForFind",
+      "*": ["vim::KakouneSearchPattern", { "smart": true }],
+      "alt-*": "vim::KakouneSearchPattern",
 
       // Command prompt. Kakoune's command language is not implemented; this
       // opens Zed's command palette, where Vim-style ex commands (`:w`,
