@@ -171,3 +171,54 @@ jobs:
                 title, body, labels: [label],
               });
             }
+
+  # Build the flake's nix package and push it to the self-hosted binary cache
+  # on najdorf (over Tailscale), so the NixOS machines substitute it instead of
+  # compiling locally. Runs after `build` so it builds the exact commit the
+  # release tag points to, which is what you pin the flake input to.
+  nix-cache:
+    needs: [check, build]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      # najdorf's MagicDNS name on the tailnet.
+      CACHE_HOST: najdorf.taila5f2.ts.net
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.release_tag }}
+          fetch-depth: 1
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          # Let the zed flake's own substituters (its cachix) serve the
+          # vendored dependencies so only the fork's code compiles.
+          extra-conf: |
+            accept-flake-config = true
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          # Create this as an EPHEMERAL, REUSABLE auth key tagged `tag:ci` in
+          # the Tailscale admin console, and store it as the TS_AUTHKEY secret.
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: gha-zed-nixcache
+
+      - name: Build the nix package
+        run: nix build .#default --no-link --print-out-paths > out-paths.txt
+
+      - name: Push the closure to najdorf
+        env:
+          # Tailscale SSH presents its own host key; accept it non-interactively.
+          NIX_SSHOPTS: "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
+        run: |
+          nix copy --to "ssh-ng://root@${CACHE_HOST}" $(cat out-paths.txt)
