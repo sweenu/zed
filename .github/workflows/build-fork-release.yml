@@ -216,9 +216,13 @@ jobs:
       - name: Build the nix package
         run: nix build .#default --no-link --print-out-paths > out-paths.txt
 
-      - name: Push the closure to najdorf
+      - name: Push to najdorf's attic cache
         env:
-          # Tailscale SSH presents its own host key; accept it non-interactively.
-          NIX_SSHOPTS: "-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
+          # Scoped, push-only token minted on najdorf with
+          # `atticd-atticadm make-token --push kakoune --pull kakoune ...`.
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
         run: |
-          nix copy --to "ssh-ng://root@${CACHE_HOST}" $(cat out-paths.txt)
+          # atticd is tailnet-only; the Tailscale step above gives us reach.
+          nix profile install nixpkgs#attic-client
+          attic login najdorf "http://${CACHE_HOST}:8080" "$ATTIC_TOKEN"
+          attic push najdorf:kakoune $(cat out-paths.txt)
