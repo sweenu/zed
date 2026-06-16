@@ -209,9 +209,13 @@ jobs:
       - name: Connect to Tailscale
         uses: tailscale/github-action@v2
         with:
-          # Create this as an EPHEMERAL, REUSABLE auth key tagged `tag:ci` in
-          # the Tailscale admin console, and store it as the TS_AUTHKEY secret.
-          authkey: ${{ secrets.TS_AUTHKEY }}
+          # OAuth client (Tailscale admin > Settings > OAuth clients) with the
+          # `auth_keys` write scope and the `tag:ci` tag. Unlike auth keys
+          # (90-day max), OAuth clients don't expire, so nothing to rotate; the
+          # action mints a short-lived ephemeral key per run.
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
           hostname: gha-zed-nixcache
 
       - name: Build the nix package
