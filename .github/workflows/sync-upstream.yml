@@ -1,5 +1,10 @@
 # Keeps the `kakoune-mode-v2` branch rebased on top of zed-industries/zed.
 #
+# This is DEVELOPMENT hygiene, not the release path. The kakoune work is
+# developed against main and kept current here so it always compiles vs main
+# and stays cheap to upstream later. The installable artifacts are built by
+# build-fork-release.yml, which replays these commits onto the PREVIEW line.
+#
 # IMPORTANT: this file must live on the fork's DEFAULT branch (main).
 # GitHub only fires `schedule` triggers from a repository's default branch,
 # so even though the job operates on `kakoune-mode-v2`, the workflow itself

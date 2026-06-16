@@ -1,12 +1,19 @@
-# Builds an installable Linux bundle of the kakoune-mode fork whenever upstream
-# publishes a new release, and publishes it as a Release on the fork.
+# Builds an installable Linux bundle of the kakoune-mode fork against Zed's
+# PREVIEW release line, and publishes it as a Release on the fork.
 #
-# This is a ROLLING build: it bundles `kakoune-mode-v2` as it currently stands
-# (upstream main + kakoune mode), using each upstream release only as the build
-# cadence and version label. It always compiles, because it's exactly the
-# branch you develop and test against. It is NOT "upstream stable + kakoune" —
-# that was tried and fails to compile whenever main and the stable release
-# differ on an API the kakoune code touches.
+# The model is "true preview release + kakoune", not "rolling main":
+#   - `kakoune-mode-v2` holds the kakoune commits, developed against main and
+#     kept rebased there by sync-upstream.yml (so it always compiles vs main).
+#   - Each upstream PREVIEW tag (`vX.Y.Z-pre`) is a point on Zed's release
+#     branch, which lags main by ~a week plus a few release-only commits.
+#   - This workflow replays the kakoune commits onto that preview tag and
+#     builds the result, so the artifact is genuinely preview code + kakoune.
+#
+# Preview lags main only slightly, so the replay almost always applies and
+# compiles cleanly. When it doesn't, the job alerts and publishes nothing:
+#   - rebase conflict  -> a touched file diverged; resolve the conflict
+#   - build failure    -> an API the kakoune code uses drifted; patch it
+# Both are the "fix-forward" cases you accepted by targeting a real release.
 #
 # Like the sync workflow, this must live on the fork's DEFAULT branch (main)
 # so the `schedule` trigger fires.
@@ -14,12 +21,14 @@ name: Build fork release
 
 on:
   schedule:
-    # Check once a day for a new upstream release.
+    # Poll daily for a new preview tag. The check job dedups, so this only
+    # actually builds when upstream cuts a preview you haven't built yet
+    # (roughly twice a week), not every day.
     - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: "Build even if a release already exists for the latest upstream tag"
+        description: "Build even if a release already exists for the latest preview tag"
         type: boolean
         default: false
 
@@ -28,14 +37,18 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # create the fork release
-  issues: write # alert if the build fails
+  contents: write # create the fork release + push the replayed build ref
+  issues: write # alert if the rebase or build fails
 
 env:
   WORK_BRANCH: kakoune-mode-v2
+  UPSTREAM: https://github.com/zed-industries/zed.git
+  # The replayed commit (kakoune on top of the preview tag) is pushed here so
+  # the release tag and the nix-cache job can both reach it.
+  BUILD_BRANCH: preview-build
 
 jobs:
-  # Cheap job: is there a new upstream release we haven't built yet?
+  # Cheap job: is there a new upstream PREVIEW release we haven't built yet?
   check:
     if: github.repository_owner != 'zed-industries'
     runs-on: ubuntu-latest
@@ -49,7 +62,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          upstream_tag=$(gh api repos/zed-industries/zed/releases/latest --jq .tag_name)
+          # Newest prerelease tag. The releases list is newest-first, and
+          # `releases/latest` would give the STABLE line, so filter explicitly.
+          upstream_tag=$(gh api 'repos/zed-industries/zed/releases?per_page=30' \
+            --jq '[.[] | select(.prerelease)] | .[0].tag_name')
+          if [ -z "$upstream_tag" ] || [ "$upstream_tag" = "null" ]; then
+            echo "Could not determine the latest preview tag." >&2
+            exit 1
+          fi
           release_tag="kakoune-${upstream_tag}"
           echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
@@ -78,7 +98,35 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.WORK_BRANCH }}
-          fetch-depth: 1
+          # Full history so we can rebase the kakoune commits onto the tag.
+          fetch-depth: 0
+          # PAT with `repo` + `workflow` scopes: pushing the replayed build
+          # ref carries upstream's workflow files, which GITHUB_TOKEN may not.
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Replay kakoune commits onto the preview tag
+        id: replay
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM"
+          git fetch --no-tags upstream main
+          git fetch --no-tags upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
+          # The fork point of the kakoune work on main: everything after it on
+          # WORK_BRANCH is the kakoune commits, regardless of how far main moved.
+          base=$(git merge-base upstream/main "$WORK_BRANCH")
+          git checkout -B "$BUILD_BRANCH" "$WORK_BRANCH"
+          if git rebase --onto "$UPSTREAM_TAG" "$base"; then
+            echo "result=ok" >> "$GITHUB_OUTPUT"
+          else
+            git rebase --abort || true
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
 
       - name: Free up disk space
         run: |
@@ -117,48 +165,78 @@ jobs:
 
       - name: Publish fork release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
           set -euo pipefail
           arch=$(uname -m)
+          # Push the replayed commit so the release tag (and the nix-cache job)
+          # can point at it. The tag is created at this commit by gh below.
+          git push --force origin "$BUILD_BRANCH"
           cat > release-notes.md <<EOF
           Installable Linux build of the kakoune-mode fork.
 
-          Built from \`${WORK_BRANCH}\` (upstream main + kakoune mode) at the time
-          upstream published **${UPSTREAM_TAG}**. This tracks main, not the
-          upstream stable line, so treat it as a rolling build. Built as the
-          \`dev\` channel so it installs alongside an official Zed.
+          Built from upstream preview **${UPSTREAM_TAG}** with the kakoune-mode
+          commits replayed on top. This tracks Zed's preview line, so it is a
+          real upstream release plus kakoune mode, not a main snapshot. Built as
+          the \`dev\` channel so it installs alongside an official Zed.
 
           To install: download \`zed-linux-${arch}.tar.gz\`, extract it, and run the
           \`zed\` binary inside.
           EOF
-          # Idempotent: a forced rebuild of an existing release replaces it
-          # (and re-points its tag at the current branch) instead of failing.
+          # Idempotent: a forced rebuild replaces the existing release and
+          # re-points its tag at the freshly replayed commit instead of failing.
           gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --cleanup-tag --yes 2>/dev/null || true
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$WORK_BRANCH" \
+            --target "$BUILD_BRANCH" \
+            --prerelease \
             --title "Kakoune Zed (${UPSTREAM_TAG})" \
             --notes-file release-notes.md \
             "target/release/zed-linux-${arch}.tar.gz" \
             "target/zed-remote-server-linux-${arch}.gz"
 
-      - name: Alert on build failure
+      - name: Alert on rebase conflict or build failure
         if: failure()
         uses: actions/github-script@v7
         with:
           script: |
+            const conflict = '${{ steps.replay.outputs.result }}' === 'conflict';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const tag = process.env.UPSTREAM_TAG;
-            const title = `Fork release build failed for ${tag}`;
-            const body = [
-              `Building \`${process.env.WORK_BRANCH}\` for upstream ${tag} failed, so no artifact was published.`,
-              '',
-              'A rolling build normally always compiles, so this usually means a recent upstream main change broke the build before the daily sync caught it. Check the run logs.',
-              '',
-              `Run: ${runUrl}`,
-            ].join('\n');
+            const title = conflict
+              ? `Preview replay conflicts for ${tag}`
+              : `Preview build failed for ${tag}`;
+            const body = conflict
+              ? [
+                  `Replaying the kakoune commits onto preview \`${tag}\` hit conflicts, so nothing was published. A file the kakoune work touches diverged on the release branch.`,
+                  '',
+                  'Resolve locally, then re-run this workflow (or fix on `kakoune-mode-v2`):',
+                  '',
+                  '```',
+                  'git fetch upstream main "refs/tags/' + tag + ':refs/tags/' + tag + '"',
+                  'git switch -c preview-build kakoune-mode-v2',
+                  'git rebase --onto ' + tag + ' $(git merge-base upstream/main kakoune-mode-v2)',
+                  '# resolve, then build to verify:',
+                  'cargo test -p vim && cargo build -p zed -p settings_ui',
+                  '```',
+                  '',
+                  `Run: ${runUrl}`,
+                ].join('\n')
+              : [
+                  `The kakoune commits replayed cleanly onto preview \`${tag}\`, but the build failed, so nothing was published. An API the kakoune code depends on likely drifted between main and this preview.`,
+                  '',
+                  'Reproduce and patch the kakoune code against the older preview API:',
+                  '',
+                  '```',
+                  'git fetch upstream main "refs/tags/' + tag + ':refs/tags/' + tag + '"',
+                  'git switch -c preview-build kakoune-mode-v2',
+                  'git rebase --onto ' + tag + ' $(git merge-base upstream/main kakoune-mode-v2)',
+                  'cargo build -p zed -p settings_ui',
+                  '```',
+                  '',
+                  `Run (full logs): ${runUrl}`,
+                ].join('\n');
             const label = 'fork-release-build';
             const existing = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,
@@ -176,10 +254,10 @@ jobs:
               });
             }
 
-  # Build the flake's nix package and push it to the self-hosted binary cache
-  # on najdorf (over Tailscale), so the NixOS machines substitute it instead of
-  # compiling locally. Runs after `build` so it builds the exact commit the
-  # release tag points to, which is what you pin the flake input to.
+  # Build the flake's nix package from the exact commit the release tag points
+  # at (preview + kakoune) and push it to the self-hosted attic cache on
+  # najdorf over Tailscale, so the NixOS machines substitute it instead of
+  # compiling locally.
   nix-cache:
     needs: [check, build]
     if: needs.check.outputs.should_build == 'true'
@@ -235,4 +313,4 @@ jobs:
           # above gives the runner reach to it over HTTPS.
           nix profile install nixpkgs#attic-client
           attic login najdorf "$ATTIC_ENDPOINT" "$ATTIC_TOKEN"
-          attic push najdorf:main $(cat out-paths.txt)
+          xargs -r attic push najdorf:main < out-paths.txt
