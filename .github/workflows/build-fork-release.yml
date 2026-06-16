@@ -132,6 +132,10 @@ jobs:
           To install: download \`zed-linux-${arch}.tar.gz\`, extract it, and run the
           \`zed\` binary inside.
           EOF
+          # Idempotent: a forced rebuild of an existing release replaces it
+          # (and re-points its tag at the current branch) instead of failing.
+          gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --cleanup-tag --yes 2>/dev/null || true
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$WORK_BRANCH" \

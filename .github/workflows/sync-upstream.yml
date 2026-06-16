@@ -45,7 +45,10 @@ jobs:
         with:
           ref: ${{ env.WORK_BRANCH }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with `repo` + `workflow` scopes. The default GITHUB_TOKEN
+          # cannot push changes to .github/workflows/* files, which the rebase
+          # pulls in whenever upstream updates its own workflows.
+          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Configure git identity
         run: |
