@@ -220,11 +220,11 @@ jobs:
       - name: Push to najdorf's attic cache
         env:
           # Scoped, push-only token minted on najdorf with
-          # `atticd-atticadm make-token --push kakoune --pull kakoune ...`.
+          # `atticd-atticadm make-token --push home --pull home ...`.
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
         run: |
           # The cache is a tailnet-only Tailscale Service; the Tailscale step
           # above gives the runner reach to it over HTTPS.
           nix profile install nixpkgs#attic-client
           attic login najdorf "$ATTIC_ENDPOINT" "$ATTIC_TOKEN"
-          attic push najdorf:kakoune $(cat out-paths.txt)
+          attic push najdorf:home $(cat out-paths.txt)
