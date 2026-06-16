@@ -182,8 +182,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     env:
-      # najdorf's MagicDNS name on the tailnet.
-      CACHE_HOST: najdorf.taila5f2.ts.net
+      # The attic cache's Tailscale Service endpoint (reachable once the
+      # runner has joined the tailnet below).
+      ATTIC_ENDPOINT: https://attic.taila5f2.ts.net
     steps:
       - name: Checkout the release tag
         uses: actions/checkout@v4
@@ -222,7 +223,8 @@ jobs:
           # `atticd-atticadm make-token --push kakoune --pull kakoune ...`.
           ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
         run: |
-          # atticd is tailnet-only; the Tailscale step above gives us reach.
+          # The cache is a tailnet-only Tailscale Service; the Tailscale step
+          # above gives the runner reach to it over HTTPS.
           nix profile install nixpkgs#attic-client
-          attic login najdorf "http://${CACHE_HOST}:8080" "$ATTIC_TOKEN"
+          attic login najdorf "$ATTIC_ENDPOINT" "$ATTIC_TOKEN"
           attic push najdorf:kakoune $(cat out-paths.txt)
