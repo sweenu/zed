@@ -489,4 +489,33 @@ mod test {
         cx.simulate_keystrokes("m r m {");
         cx.assert_state("({woˇrld})", Mode::HelixNormal);
     }
+
+    #[gpui::test]
+    async fn test_kakoune_surround(cx: &mut gpui::TestAppContext) {
+        let mut cx = VimTestContext::new(cx, true).await;
+        cx.enable_kakoune();
+
+        // Kakoune ships no built-in surround (it's the kak-surround plugin), so
+        // there's no default binding. Dispatch the actions the way a user keymap
+        // would, then type the delimiter into the waiting operator. This guards
+        // against the operator dispatch being gated to Helix modes only.
+
+        // Add wraps the selection.
+        cx.set_state("hello «worlˇ»d", Mode::KakouneNormal);
+        cx.dispatch_action(crate::PushHelixSurroundAdd);
+        cx.simulate_keystrokes("[");
+        cx.assert_state("hello [worlˇ]d", Mode::KakouneNormal);
+
+        // Delete removes the nearest surrounding pair around the cursor.
+        cx.set_state("hello (woˇrld) test", Mode::KakouneNormal);
+        cx.dispatch_action(crate::PushHelixSurroundDelete);
+        cx.simulate_keystrokes("(");
+        cx.assert_state("hello woˇrld test", Mode::KakouneNormal);
+
+        // Replace takes the old delimiter, then the new one.
+        cx.set_state("hello (woˇrld) test", Mode::KakouneNormal);
+        cx.dispatch_action(crate::PushHelixSurroundReplace);
+        cx.simulate_keystrokes("( [");
+        cx.assert_state("hello [woˇrld] test", Mode::KakouneNormal);
+    }
 }
