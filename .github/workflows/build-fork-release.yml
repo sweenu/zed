@@ -292,14 +292,18 @@ jobs:
         uses: tailscale/github-action@v2
         with:
           # OAuth client (Tailscale admin > Settings > OAuth clients) with the
-          # `auth_keys` write scope and the `tag:attic` tag. Unlike auth keys
+          # `auth_keys` write scope and the `tag:ci` tag. Unlike auth keys
           # (90-day max), OAuth clients don't expire, so nothing to rotate; the
-          # action mints a short-lived ephemeral key per run. `tag:attic` must
+          # action mints a short-lived ephemeral key per run. `tag:ci` must
           # be declared in tagOwners and granted reach to the cache Service.
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:attic
+          tags: tag:ci
           hostname: gha-zed-nixcache
+          # The action's default tailscale is too old (1.42.0) to route to a
+          # Tailscale Service VIP (svc:attic) — that feature needs ~1.74+.
+          # Pin a modern client or the push silently times out on connect.
+          version: 1.98.5
 
       - name: Build the nix package
         run: nix build .#default --no-link --print-out-paths > out-paths.txt
