@@ -50,6 +50,7 @@ Behavioral differences:
 - `.` uses Vim's repeat-last-change rather than Kakoune's repeat-last-insert, and `alt-.` repeats only `f`/`t` finds, not object selections.
 - Instead of Kakoune's `aligntab` option, `&` pads with tabs when the buffer's language uses `hard_tabs`.
 - Like Kakoune, `space` ships without default bindings; define your own user-mode style chords in your keymap with the `vim_mode == kakoune_normal` context.
+- Like Kakoune, surround editing is not built in (Kakoune provides it through the `kak-surround` plugin). The selection-first `vim::PushHelixSurroundAdd`, `vim::PushHelixSurroundReplace`, and `vim::PushHelixSurroundDelete` actions are available to bind in your keymap.
 - Kakoune's command language (`:write`, `:edit`, `:set-option`, `%sh{...}`, etc.) is not implemented. `:` instead opens Zed's command palette, which recognizes Vim-style ex commands (`:w`, `:q`, and so on).
 - In the lock view mode, keys other than the view keys execute their normal binding and leave the mode, instead of being ignored.
 - `\` covers autoindent and format-on-save; it does not suppress bracket auto-closing or completions.
