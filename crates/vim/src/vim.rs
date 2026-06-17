@@ -2250,7 +2250,7 @@ impl Vim {
                 _ => self.clear_operator(window, cx),
             },
             Some(Operator::HelixSurroundAdd) => match self.mode {
-                Mode::HelixNormal | Mode::HelixSelect => {
+                Mode::HelixNormal | Mode::HelixSelect | Mode::KakouneNormal => {
                     self.update_editor(cx, |_, editor, cx| {
                         editor.change_selections(Default::default(), window, cx, |s| {
                             s.move_with(&mut |map, selection| {
@@ -2269,7 +2269,7 @@ impl Vim {
             Some(Operator::HelixSurroundReplace {
                 replaced_char: Some(old),
             }) => match self.mode {
-                Mode::HelixNormal | Mode::HelixSelect => {
+                Mode::HelixNormal | Mode::HelixSelect | Mode::KakouneNormal => {
                     if let Some(new_char) = text.chars().next() {
                         self.helix_surround_replace(old, new_char, window, cx);
                     }
@@ -2280,7 +2280,7 @@ impl Vim {
             Some(Operator::HelixSurroundReplace {
                 replaced_char: None,
             }) => match self.mode {
-                Mode::HelixNormal | Mode::HelixSelect => {
+                Mode::HelixNormal | Mode::HelixSelect | Mode::KakouneNormal => {
                     if let Some(ch) = text.chars().next() {
                         self.pop_operator(window, cx);
                         self.push_operator(
@@ -2295,7 +2295,7 @@ impl Vim {
                 _ => self.clear_operator(window, cx),
             },
             Some(Operator::HelixSurroundDelete) => match self.mode {
-                Mode::HelixNormal | Mode::HelixSelect => {
+                Mode::HelixNormal | Mode::HelixSelect | Mode::KakouneNormal => {
                     if let Some(ch) = text.chars().next() {
                         self.helix_surround_delete(ch, window, cx);
                     }
