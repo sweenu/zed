@@ -173,15 +173,21 @@ jobs:
           # can point at it. The tag is created at this commit by gh below.
           git push --force origin "$BUILD_BRANCH"
           cat > release-notes.md <<EOF
-          Installable Linux build of the kakoune-mode fork.
+          Installable Linux and macOS builds of the kakoune-mode fork.
 
           Built from upstream preview **${UPSTREAM_TAG}** with the kakoune-mode
           commits replayed on top. This tracks Zed's preview line, so it is a
           real upstream release plus kakoune mode, not a main snapshot. Built as
           the \`dev\` channel so it installs alongside an official Zed.
 
-          To install: download \`zed-linux-${arch}.tar.gz\`, extract it, and run the
+          **Linux:** download \`zed-linux-${arch}.tar.gz\`, extract it, and run the
           \`zed\` binary inside.
+
+          **macOS (Apple Silicon):** download \`Zed-aarch64.dmg\` and drag Zed to
+          Applications. The build is unsigned, so clear the quarantine flag once:
+          \`xattr -dr com.apple.quarantine /Applications/Zed.app\` (or right-click
+          the app and choose Open). The macOS DMG is attached by a separate job a
+          few minutes after this release first appears.
           EOF
           # Idempotent: a forced rebuild replaces the existing release and
           # re-points its tag at the freshly replayed commit instead of failing.
@@ -253,6 +259,59 @@ jobs:
                 title, body, labels: [label],
               });
             }
+
+  # Build an Apple Silicon (arm64) macOS bundle and attach it to the release
+  # the `build` job already created. The `build` job has, by the time this
+  # runs, replayed the kakoune commits onto the preview tag, pushed the result
+  # to `preview-build`, and published the release; this job just checks out
+  # that exact commit and adds the .dmg.
+  #
+  # The build is UNSIGNED: with no Apple secrets present, `script/bundle-mac`
+  # ad-hoc signs the app and strips the universal-links entitlement. Gatekeeper
+  # will quarantine it, so on first launch the user clears it once with
+  # `xattr -dr com.apple.quarantine /Applications/Zed.app` (or right-click >
+  # Open). Auto-update is already neutralized by the `dev` channel.
+  build-macos:
+    needs: [check, build]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: macos-14
+    # Cold builds on the free 3-core runner are slow; give them headroom.
+    timeout-minutes: 150
+    env:
+      RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
+    steps:
+      - name: Checkout the replayed build commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BUILD_BRANCH }}
+          fetch-depth: 1
+
+      - name: Set up Node
+        # script/bundle-mac shells out to `dmg-license` (npm) for the DMG.
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Force a coexisting channel
+        run: echo dev > crates/zed/RELEASE_CHANNEL
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bundle-mac
+          cache-on-failure: true
+
+      - name: Bundle macOS release (arm64, unsigned)
+        # No Apple secrets in env -> the script falls back to ad-hoc signing.
+        run: ./script/bundle-mac aarch64-apple-darwin
+
+      - name: Attach the DMG to the release
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "target/aarch64-apple-darwin/release/Zed-aarch64.dmg" \
+            --repo "$GITHUB_REPOSITORY" --clobber
 
   # Build the flake's nix package from the exact commit the release tag points
   # at (preview + kakoune) and push it to the self-hosted attic cache on
