@@ -2,7 +2,7 @@
 # PREVIEW release line, and publishes it as a Release on the fork.
 #
 # The model is "true preview release + kakoune", not "rolling main":
-#   - `kakoune-mode-v2` holds the kakoune commits, developed against main and
+#   - `kakoune-mode` holds the kakoune commits, developed against main and
 #     kept rebased there by sync-upstream.yml (so it always compiles vs main).
 #   - Each upstream PREVIEW tag (`vX.Y.Z-pre`) is a point on Zed's release
 #     branch, which lags main by ~a week plus a few release-only commits.
@@ -41,7 +41,7 @@ permissions:
   issues: write # alert if the rebase or build fails
 
 env:
-  WORK_BRANCH: kakoune-mode-v2
+  WORK_BRANCH: kakoune-mode
   UPSTREAM: https://github.com/zed-industries/zed.git
   # The replayed commit (kakoune on top of the preview tag) is pushed here so
   # the release tag and the nix-cache job can both reach it.
@@ -217,12 +217,12 @@ jobs:
               ? [
                   `Replaying the kakoune commits onto preview \`${tag}\` hit conflicts, so nothing was published. A file the kakoune work touches diverged on the release branch.`,
                   '',
-                  'Resolve locally, then re-run this workflow (or fix on `kakoune-mode-v2`):',
+                  'Resolve locally, then re-run this workflow (or fix on `kakoune-mode`):',
                   '',
                   '```',
                   'git fetch upstream main "refs/tags/' + tag + ':refs/tags/' + tag + '"',
-                  'git switch -c preview-build kakoune-mode-v2',
-                  'git rebase --onto ' + tag + ' $(git merge-base upstream/main kakoune-mode-v2)',
+                  'git switch -c preview-build kakoune-mode',
+                  'git rebase --onto ' + tag + ' $(git merge-base upstream/main kakoune-mode)',
                   '# resolve, then build to verify:',
                   'cargo test -p vim && cargo build -p zed -p settings_ui',
                   '```',
@@ -236,8 +236,8 @@ jobs:
                   '',
                   '```',
                   'git fetch upstream main "refs/tags/' + tag + ':refs/tags/' + tag + '"',
-                  'git switch -c preview-build kakoune-mode-v2',
-                  'git rebase --onto ' + tag + ' $(git merge-base upstream/main kakoune-mode-v2)',
+                  'git switch -c preview-build kakoune-mode',
+                  'git rebase --onto ' + tag + ' $(git merge-base upstream/main kakoune-mode)',
                   'cargo build -p zed -p settings_ui',
                   '```',
                   '',

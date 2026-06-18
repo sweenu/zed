@@ -1,4 +1,4 @@
-# Keeps the `kakoune-mode-v2` branch rebased on top of zed-industries/zed.
+# Keeps the `kakoune-mode` branch rebased on top of zed-industries/zed.
 #
 # This is DEVELOPMENT hygiene, not the release path. The kakoune work is
 # developed against main and kept current here so it always compiles vs main
@@ -7,10 +7,10 @@
 #
 # IMPORTANT: this file must live on the fork's DEFAULT branch (main).
 # GitHub only fires `schedule` triggers from a repository's default branch,
-# so even though the job operates on `kakoune-mode-v2`, the workflow itself
+# so even though the job operates on `kakoune-mode`, the workflow itself
 # has to be committed to `main`.
 #
-# On every run it rebases `kakoune-mode-v2` onto the fresh `upstream/main`:
+# On every run it rebases `kakoune-mode` onto the fresh `upstream/main`:
 #   - rebase conflicts        -> open/refresh an alert issue, push nothing
 #   - rebase clean, tests fail -> open/refresh an alert issue, push nothing
 #   - rebase clean, tests pass -> force-push the rebased branch
@@ -35,7 +35,7 @@ permissions:
   issues: write # open/refresh the alert issue
 
 env:
-  WORK_BRANCH: kakoune-mode-v2
+  WORK_BRANCH: kakoune-mode
   UPSTREAM: https://github.com/zed-industries/zed.git
 
 jobs:
