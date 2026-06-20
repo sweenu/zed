@@ -95,7 +95,7 @@ jobs:
       RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
     steps:
       - name: Checkout work branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.WORK_BRANCH }}
           # Full history so we can rebase the kakoune commits onto the tag.
@@ -288,14 +288,14 @@ jobs:
       RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
     steps:
       - name: Checkout the replayed build commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.BUILD_BRANCH }}
           fetch-depth: 1
 
       - name: Set up Node
         # script/bundle-mac shells out to `dmg-license` (npm) for the DMG.
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
 
@@ -355,7 +355,7 @@ jobs:
       ATTIC_ENDPOINT: https://attic.taila5f2.ts.net
     steps:
       - name: Checkout the release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.check.outputs.release_tag }}
           fetch-depth: 1
