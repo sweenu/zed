@@ -279,7 +279,11 @@ jobs:
   build-macos:
     needs: [check, build]
     if: needs.check.outputs.should_build == 'true'
-    runs-on: macos-14
+    # macos-15 (standard, free on public repos) defaults to Xcode 16.x, whose
+    # Apple libc++ satisfies the C++20 contiguous_iterator concept that the
+    # pinned cxx in webrtc-sys requires. The older macos-14 Xcode 15.x libc++
+    # fails it (static_assert(contiguous_range<rust::Slice<...>>) in cxx.h).
+    runs-on: macos-15
     # Cold builds on the free 3-core runner are slow; give them the full
     # GitHub-hosted ceiling (6h hard cap) so the first cold build can finish
     # and its post-step saves the rust-cache for fast subsequent runs.
@@ -301,26 +305,6 @@ jobs:
 
       - name: Force a coexisting channel
         run: echo dev > crates/zed/RELEASE_CHANNEL
-
-      # Xcode 15.3+ ships a libc++ whose stricter `contiguous_iterator` concept
-      # makes the cxx version pinned by webrtc-sys fail to compile (the
-      # `static_assert(contiguous_range<rust::Slice<...>>)` in cxx.h). The free
-      # macos-14 image defaults to 15.4, so pin the newest Xcode <= 15.2.
-      - name: Select an Xcode compatible with webrtc-sys (cxx)
-        run: |
-          for app in /Applications/Xcode_15.2*.app \
-                     /Applications/Xcode_15.1*.app \
-                     /Applications/Xcode_15.0*.app; do
-            if [ -d "$app" ]; then
-              echo "Using $app"
-              sudo xcode-select -s "$app/Contents/Developer"
-              cc --version
-              exit 0
-            fi
-          done
-          echo "No Xcode <= 15.2 found on runner; available:" >&2
-          ls -d /Applications/Xcode_*.app >&2
-          exit 1
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
