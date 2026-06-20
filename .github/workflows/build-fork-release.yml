@@ -120,7 +120,12 @@ jobs:
           # WORK_BRANCH is the kakoune commits, regardless of how far main moved.
           base=$(git merge-base upstream/main "$WORK_BRANCH")
           git checkout -B "$BUILD_BRANCH" "$WORK_BRANCH"
-          if git rebase --onto "$UPSTREAM_TAG" "$base"; then
+          # --committer-date-is-author-date makes the replayed commit SHAs
+          # deterministic across re-runs (committer date would otherwise be
+          # "now"). The zed nix package bakes the git short-rev into its
+          # name (zed-editor-...-nightly+<rev>), so a churning SHA would
+          # change the store path every run and miss the attic cache.
+          if git rebase --committer-date-is-author-date --onto "$UPSTREAM_TAG" "$base"; then
             echo "result=ok" >> "$GITHUB_OUTPUT"
           else
             git rebase --abort || true
