@@ -14,6 +14,8 @@
 #   - rebase conflict  -> a touched file diverged; resolve the conflict
 #   - build failure    -> an API the kakoune code uses drifted; patch it
 # Both are the "fix-forward" cases you accepted by targeting a real release.
+# Failed runs also trigger sync-autofix.yml, which asks Claude to diagnose
+# the failure and open a fix PR.
 #
 # Like the sync workflow, this must live on the fork's DEFAULT branch (main)
 # so the `schedule` trigger fires.

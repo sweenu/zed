@@ -14,6 +14,8 @@
 #   - rebase conflicts        -> open/refresh an alert issue, push nothing
 #   - rebase clean, tests fail -> open/refresh an alert issue, push nothing
 #   - rebase clean, tests pass -> force-push the rebased branch
+# Failed runs also trigger sync-autofix.yml, which asks Claude to diagnose
+# the failure and open a fix PR.
 #
 # `main` is NOT mirrored from upstream: it holds these workflow files, so it
 # is not a clean fast-forward of upstream/main. The branch is what matters.
@@ -180,7 +182,10 @@ jobs:
             }
 
       # `continue-on-error` above keeps the alert step reachable on a test
-      # failure; this makes the job itself go red so the failure is visible.
-      - name: Fail the job on test failure
-        if: steps.rebase.outputs.result == 'rebased' && steps.test.outcome == 'failure'
+      # failure; this makes the job itself go red so the failure is visible
+      # and so sync-autofix.yml (workflow_run on failure) fires.
+      - name: Fail the job on conflict or test failure
+        if: >-
+          steps.rebase.outputs.result == 'conflict' ||
+          (steps.rebase.outputs.result == 'rebased' && steps.test.outcome == 'failure')
         run: exit 1
