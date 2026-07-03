@@ -1,0 +1,179 @@
+# Asks Claude to fix a failed upstream sync or fork release build.
+#
+# When sync-upstream.yml or build-fork-release.yml fails (rebase conflict,
+# test breakage after a clean rebase, build failure on the preview replay),
+# this workflow hands the failed run to Claude Code, which diagnoses it,
+# reproduces the failure locally, and opens a PR with a fix — or re-runs the
+# workflow and comments on the alert issue when the failure is an infra
+# flake with nothing to fix.
+#
+# Auth: uses a Claude Pro/Max SUBSCRIPTION via an OAuth token, not an
+# Anthropic API key. One-time setup:
+#   1. On your own machine run: claude setup-token
+#   2. Copy the token it prints.
+#   3. Add it as a repository secret named CLAUDE_CODE_OAUTH_TOKEN.
+# If the secret is missing the job skips quietly instead of failing.
+# Runs count against the subscription's usage limits.
+#
+# Like the other fork workflows this file must live on the DEFAULT branch
+# (main): `workflow_run` triggers only fire for workflows defined there.
+name: Sync autofix
+
+on:
+  workflow_run:
+    workflows: ["Sync upstream", "Build fork release"]
+    types: [completed]
+  # Manual runs let you retry an autofix; Claude then locates the most
+  # recent failed run itself.
+  workflow_dispatch: {}
+
+# One autofix at a time; a second failure while Claude is working would
+# fight over branches and the alert issue.
+concurrency:
+  group: sync-autofix
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push fix branches
+  issues: write # comment on the alert issue
+  pull-requests: write # open the fix PR
+  actions: read # read the failed run's logs
+
+jobs:
+  autofix:
+    if: >-
+      github.repository_owner != 'zed-industries' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.workflow_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    # Cold cargo builds on the free 4-core runner are slow; leave headroom
+    # for Claude to build and test more than once.
+    timeout-minutes: 300
+    steps:
+      - name: Check for the Claude OAuth token
+        id: gate
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "CLAUDE_CODE_OAUTH_TOKEN secret is not set; skipping autofix." >&2
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout work branch
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: kakoune-mode
+          # Full history: fixing a rebase needs the merge-base with upstream.
+          fetch-depth: 0
+          # PAT with `repo` + `workflow` scopes, same as the sync workflow:
+          # pushed branches carry upstream's workflow files, which the
+          # default GITHUB_TOKEN cannot push.
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Configure git identity and upstream remote
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/zed-industries/zed.git
+          git fetch --no-tags upstream main
+
+      - name: Free up disk space
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/.ghcup
+          sudo docker image prune --all --force || true
+
+      - name: Install system dependencies
+        if: steps.gate.outputs.enabled == 'true'
+        run: ./script/linux
+
+      - name: Cache Rust build
+        if: steps.gate.outputs.enabled == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Share the sync workflow's cache so Claude's test builds are warm.
+          shared-key: sync-upstream
+          cache-on-failure: true
+
+      - name: Run Claude
+        if: steps.gate.outputs.enabled == 'true'
+        uses: anthropics/claude-code-action@v1
+        env:
+          # Authenticates `gh` inside Claude's Bash tool (run logs, rerun,
+          # issue comments, PR creation).
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: |
+            --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
+            --max-turns 100
+          prompt: |
+            You are maintaining sweenu/zed, a fork of zed-industries/zed whose
+            only delta is Kakoune mode: ~32 commits (mostly
+            crates/vim/src/kakoune.rs, assets/keymaps/vim.json and
+            docs/src/kakoune.md) carried on the `kakoune-mode` branch directly
+            on top of upstream/main. Two scheduled workflows maintain it:
+            - "Sync upstream" rebases kakoune-mode onto upstream/main daily and
+              force-pushes only if `cargo test -p vim && cargo build -p zed -p
+              settings_ui` passes.
+            - "Build fork release" replays the kakoune commits onto the newest
+              upstream preview tag (vX.Y.Z-pre) and publishes installable
+              builds from it.
+
+            One of them failed and your job is to fix it.
+            Failed workflow: "${{ github.event.workflow_run.name }}"
+            Failed run: ${{ github.event.workflow_run.html_url }}
+            (If those are blank this was started manually: use `gh run list`
+            to find the most recent failed run of "Sync upstream" or
+            "Build fork release".)
+
+            You are checked out on `kakoune-mode` with full history, an
+            `upstream` remote already fetched, system dependencies installed,
+            and a warm cargo cache. `gh` is authenticated. Proceed like this:
+
+            1. Read the failure: `gh run view <run-id> --log-failed`.
+            2. Classify it:
+               a. Rebase/replay conflict — upstream changed a file the kakoune
+                  commits touch.
+               b. Clean rebase but the tests or build failed — upstream
+                  changed an API the kakoune code uses.
+               c. Infrastructure flake — runner disk, network, tailscale,
+                  cache, timeout. The macos and nix-cache jobs of the release
+                  workflow cannot be reproduced on this runner, so for those
+                  judge from the logs alone.
+            3. For (c): do NOT open a PR. Retry with
+               `gh run rerun <run-id> --failed` and leave a comment explaining
+               the flake on the open alert issue (label `upstream-sync` for
+               the sync workflow, `fork-release-build` for the release one).
+            4. For (b): fix the kakoune code on a new branch off kakoune-mode
+               named `claude/sync-autofix-<run-id>`. Verify with
+               `cargo test -p vim && cargo build -p zed -p settings_ui`.
+               Push the branch and open a PR with base `kakoune-mode`.
+            5. For (a): perform the failing rebase yourself —
+               for the sync workflow: `git rebase upstream/main`;
+               for the release replay:
+               `git fetch --no-tags upstream "refs/tags/<tag>:refs/tags/<tag>"`
+               then `git rebase --committer-date-is-author-date --onto <tag>
+               $(git merge-base upstream/main kakoune-mode)`.
+               Resolve the conflicts preserving both upstream's intent and the
+               kakoune behavior, verify with the same cargo commands, then
+               push the fully rebased result to `claude/sync-rebase-<run-id>`
+               and open a PR with base `kakoune-mode`. In the PR body list
+               every conflicted file and how you resolved it, and state
+               clearly that this PR must NOT be merged through GitHub because
+               it rewrites history — after review it is applied with:
+               `git push --force-with-lease origin claude/sync-rebase-<run-id>:kakoune-mode`
+            6. Whenever you open a PR, also comment a link to it on the open
+               alert issue mentioned in step 3.
+
+            PR hygiene: imperative title with no conventional-commit prefix
+            and no trailing punctuation, and end the PR body with:
+
+            Release Notes:
+
+            - N/A
