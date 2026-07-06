@@ -109,6 +109,10 @@ jobs:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Without an explicit token the action mints one via OIDC + the
+          # Claude GitHub App, which needs `id-token: write` and the app
+          # installed; the PAT skips that exchange entirely.
+          github_token: ${{ secrets.SYNC_TOKEN }}
           claude_args: |
             --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
             --max-turns 100
