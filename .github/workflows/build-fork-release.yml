@@ -390,4 +390,17 @@ jobs:
           # above gives the runner reach to it over HTTPS.
           nix profile install nixpkgs#attic-client
           attic login najdorf "$ATTIC_ENDPOINT" "$ATTIC_TOKEN"
-          xargs -r attic push najdorf:main < out-paths.txt
+          # The push is idempotent (already-uploaded paths are skipped), so
+          # retry through transient tailnet/server blips instead of failing
+          # the run after an hour-long build.
+          for delay in 30 60 120 0; do
+            if xargs -r attic push najdorf:main < out-paths.txt; then
+              exit 0
+            fi
+            if [ "$delay" -eq 0 ]; then
+              echo "attic push failed after 4 attempts" >&2
+              exit 1
+            fi
+            echo "attic push failed; retrying in ${delay}s..." >&2
+            sleep "$delay"
+          done
