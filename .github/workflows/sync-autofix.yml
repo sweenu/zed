@@ -100,6 +100,15 @@ jobs:
           shared-key: sync-upstream
           cache-on-failure: true
 
+      # Snapshot of what Claude could plausibly change, so the verification
+      # step below can tell "did the work" from "ended without doing it".
+      - name: Record pre-autofix state
+        id: before
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          git ls-remote --heads origin 'claude/sync-*' | awk '{print $2}' | sort > "${RUNNER_TEMP}/claude-branches-before.txt"
+          echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Run Claude
         if: steps.gate.outputs.enabled == 'true'
         uses: anthropics/claude-code-action@v1
@@ -107,14 +116,25 @@ jobs:
           # Authenticates `gh` inside Claude's Bash tool (run logs, rerun,
           # issue comments, PR creation).
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          # The verification gate (`cargo test -p vim` plus `cargo build -p
+          # zed -p settings_ui`) runs 10-20 minutes on this runner even with
+          # a warm cache. The Bash tool's stock 2-minute default and
+          # 10-minute ceiling cannot fit it, which leaves Claude unable to
+          # verify anything and liable to give up without pushing.
+          BASH_DEFAULT_TIMEOUT_MS: "1800000" # 30 minutes
+          BASH_MAX_TIMEOUT_MS: "5400000" # 90 minutes
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Without an explicit token the action mints one via OIDC + the
           # Claude GitHub App, which needs `id-token: write` and the app
           # installed; the PAT skips that exchange entirely.
           github_token: ${{ secrets.SYNC_TOKEN }}
+          # Otherwise a run that accomplishes nothing leaves no trace of why.
+          # The job log is secret-masked by Actions, unlike an uploaded
+          # artifact would be.
+          show_full_output: true
           claude_args: |
-            --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
+            --allowedTools "Bash,Read,Edit,Write,Glob,Grep,TodoWrite"
             --max-turns 100
           prompt: |
             You are maintaining sweenu/zed, a fork of zed-industries/zed whose
@@ -175,9 +195,53 @@ jobs:
             6. Whenever you open a PR, also comment a link to it on the open
                alert issue mentioned in step 3.
 
+            The verification gate is slow: `cargo test -p vim` followed by
+            `cargo build -p zed -p settings_ui` takes 10-20 minutes on this
+            runner even with a warm cache. Run each with an explicit long
+            Bash timeout (`timeout: 2700000`) and let it finish. Being slow
+            is expected and is not a reason to skip verification.
+
+            Never end a run without leaving a visible outcome. Every run has
+            to finish with a pushed branch and a PR, or a comment on the
+            alert issue — a rerun for a flake, or, if you could not finish
+            the fix, a comment saying exactly how far you got and what
+            blocked you. If the fix looks right but you could not get the
+            cargo gate to pass or to complete, still push the branch and
+            open the PR, and say plainly in the PR body that it is
+            unverified and why. A silent run is the one outcome that is
+            never acceptable: the branch stays broken and nobody is told.
+
             PR hygiene: imperative title with no conventional-commit prefix
             and no trailing punctuation, and end the PR body with:
 
             Release Notes:
 
             - N/A
+
+      # The action exits 0 whenever the model ends its turn, even if it did
+      # nothing at all — which once left a rebase conflict unresolved behind
+      # a green check. Turn "no outcome" into a red job so the failure stays
+      # visible instead of looking handled.
+      - name: Verify the autofix produced an outcome
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          git ls-remote --heads origin 'claude/sync-*' | awk '{print $2}' | sort > "${RUNNER_TEMP}/claude-branches-after.txt"
+          new_branches=$(comm -13 "${RUNNER_TEMP}/claude-branches-before.txt" "${RUNNER_TEMP}/claude-branches-after.txt")
+          new_comments=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/issues/comments?since=${{ steps.before.outputs.at }}&per_page=100" \
+            --jq 'length')
+
+          if [ -n "$new_branches" ]; then
+            echo "Autofix pushed:"
+            echo "$new_branches"
+            exit 0
+          fi
+          if [ "$new_comments" -gt 0 ]; then
+            echo "Autofix left $new_comments comment(s) on the alert issue."
+            exit 0
+          fi
+
+          echo "::error::Claude ended without pushing a fix branch or commenting on the alert issue. The original failure is still unfixed; see the run log above for what it did."
+          exit 1
