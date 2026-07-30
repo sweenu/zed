@@ -37,7 +37,7 @@ permissions:
   contents: write # push fix branches
   issues: write # comment on the alert issue
   pull-requests: write # open the fix PR
-  actions: read # read the failed run's logs
+  actions: write # read the failed run's logs, and re-run it after a flake
 
 jobs:
   autofix:
@@ -116,6 +116,13 @@ jobs:
           # Authenticates `gh` inside Claude's Bash tool (run logs, rerun,
           # issue comments, PR creation).
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          # SYNC_TOKEN is a fine-grained PAT without the Actions write
+          # permission, so `gh run rerun` 403s on it — which is what stopped
+          # run 30553423031 from retrying a flaky nix-cache job. The job's
+          # own token has `actions: write` from the block above and can
+          # re-run. Granting SYNC_TOKEN "Actions: read and write" would make
+          # this fallback unnecessary.
+          GH_TOKEN_ACTIONS: ${{ secrets.GITHUB_TOKEN }}
           # The verification gate (`cargo test -p vim` plus `cargo build -p
           # zed -p settings_ui`) runs 10-20 minutes on this runner even with
           # a warm cache. The Bash tool's stock 2-minute default and
@@ -171,9 +178,15 @@ jobs:
                   workflow cannot be reproduced on this runner, so for those
                   judge from the logs alone.
             3. For (c): do NOT open a PR. Retry with
-               `gh run rerun <run-id> --failed` and leave a comment explaining
-               the flake on the open alert issue (label `upstream-sync` for
-               the sync workflow, `fork-release-build` for the release one).
+               `gh run rerun <run-id> --failed`; if that 403s, retry it as
+               `GH_TOKEN="$GH_TOKEN_ACTIONS" gh run rerun <run-id> --failed`.
+               Then explain the flake on the alert issue (label
+               `upstream-sync` for the sync workflow, `fork-release-build`
+               for the release one). Often there is no such issue open: only
+               the release workflow's `build` job files one, so `build-macos`
+               and `nix-cache` failures arrive with nothing to comment on.
+               Open one yourself in that case, with the right label — a new
+               issue and a comment count equally as the outcome for step 6.
             4. For (b): fix the kakoune code on a new branch off kakoune-mode
                named `claude/sync-autofix-<run-id>`. Verify with
                `cargo test -p vim && cargo build -p zed -p settings_ui`.
@@ -202,10 +215,10 @@ jobs:
             is expected and is not a reason to skip verification.
 
             Never end a run without leaving a visible outcome. Every run has
-            to finish with a pushed branch and a PR, or a comment on the
-            alert issue — a rerun for a flake, or, if you could not finish
-            the fix, a comment saying exactly how far you got and what
-            blocked you. If the fix looks right but you could not get the
+            to finish with a pushed branch and a PR, or an alert issue
+            commented on or opened — a rerun for a flake, or, if you could
+            not finish the fix, a note saying exactly how far you got and
+            what blocked you. If the fix looks right but you could not get the
             cargo gate to pass or to complete, still push the branch and
             open the PR, and say plainly in the PR body that it is
             unverified and why. A silent run is the one outcome that is
@@ -226,22 +239,36 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          SINCE: ${{ steps.before.outputs.at }}
         run: |
           git ls-remote --heads origin 'claude/sync-*' | awk '{print $2}' | sort > "${RUNNER_TEMP}/claude-branches-after.txt"
           new_branches=$(comm -13 "${RUNNER_TEMP}/claude-branches-before.txt" "${RUNNER_TEMP}/claude-branches-after.txt")
-          new_comments=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/issues/comments?since=${{ steps.before.outputs.at }}&per_page=100" \
-            --jq 'length')
-
           if [ -n "$new_branches" ]; then
             echo "Autofix pushed:"
             echo "$new_branches"
             exit 0
           fi
+
+          new_comments=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/issues/comments?since=${SINCE}&per_page=100" \
+            --jq 'length')
           if [ "$new_comments" -gt 0 ]; then
-            echo "Autofix left $new_comments comment(s) on the alert issue."
+            echo "Autofix left $new_comments issue comment(s)."
             exit 0
           fi
 
-          echo "::error::Claude ended without pushing a fix branch or commenting on the alert issue. The original failure is still unfixed; see the run log above for what it did."
+          # Opening a fresh alert issue counts too. Only the release
+          # workflow's `build` job files one, so a `build-macos` or
+          # `nix-cache` failure reaches Claude with no open issue to comment
+          # on and the right move is to open one. Counting just comments
+          # failed run 30553423031 for doing exactly that.
+          touched_issues=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/issues?state=all&since=${SINCE}&per_page=100" \
+            --jq 'length')
+          if [ "$touched_issues" -gt 0 ]; then
+            echo "Autofix opened or updated $touched_issues issue(s)."
+            exit 0
+          fi
+
+          echo "::error::Claude ended without pushing a fix branch or leaving an issue behind. The original failure is still unfixed; see the run log above for what it did."
           exit 1
