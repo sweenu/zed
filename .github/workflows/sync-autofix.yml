@@ -69,9 +69,9 @@ jobs:
           ref: kakoune-mode
           # Full history: fixing a rebase needs the merge-base with upstream.
           fetch-depth: 0
-          # PAT with `repo` + `workflow` scopes, same as the sync workflow:
-          # pushed branches carry upstream's workflow files, which the
-          # default GITHUB_TOKEN cannot push.
+          # Same fine-grained PAT as the sync workflow, needing Contents and
+          # Workflows read+write here: pushed branches carry upstream's
+          # workflow files, which the default GITHUB_TOKEN cannot push.
           token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Configure git identity and upstream remote
@@ -116,12 +116,14 @@ jobs:
           # Authenticates `gh` inside Claude's Bash tool (run logs, rerun,
           # issue comments, PR creation).
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
-          # SYNC_TOKEN is a fine-grained PAT without the Actions write
-          # permission, so `gh run rerun` 403s on it — which is what stopped
-          # run 30553423031 from retrying a flaky nix-cache job. The job's
-          # own token has `actions: write` from the block above and can
-          # re-run. Granting SYNC_TOKEN "Actions: read and write" would make
-          # this fallback unnecessary.
+          # Fallback for Actions writes. SYNC_TOKEN has had "Actions: read
+          # and write" since run 30553423031 could not retry a flaky
+          # nix-cache job (`gh run rerun` 403'd), so the PAT should handle
+          # this itself and this token should go unused. It stays as a net
+          # because a fine-grained PAT's permissions can be revoked or
+          # narrowed without anything here changing; the prompt tells Claude
+          # to report having needed it, so a quietly regressed grant surfaces
+          # instead of silently costing us the retry path again.
           GH_TOKEN_ACTIONS: ${{ secrets.GITHUB_TOKEN }}
           # The verification gate (`cargo test -p vim` plus `cargo build -p
           # zed -p settings_ui`) runs 10-20 minutes on this runner even with
@@ -178,8 +180,11 @@ jobs:
                   workflow cannot be reproduced on this runner, so for those
                   judge from the logs alone.
             3. For (c): do NOT open a PR. Retry with
-               `gh run rerun <run-id> --failed`; if that 403s, retry it as
-               `GH_TOKEN="$GH_TOKEN_ACTIONS" gh run rerun <run-id> --failed`.
+               `gh run rerun <run-id> --failed`. That should work; if it
+               403s the PAT has lost its Actions write permission, so retry
+               as `GH_TOKEN="$GH_TOKEN_ACTIONS" gh run rerun <run-id>
+               --failed` and say in your issue comment that you had to —
+               that is a token regression worth fixing at the source.
                Then explain the flake on the alert issue (label
                `upstream-sync` for the sync workflow, `fork-release-build`
                for the release one). Often there is no such issue open: only

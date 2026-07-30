@@ -102,8 +102,11 @@ jobs:
           ref: ${{ env.WORK_BRANCH }}
           # Full history so we can rebase the kakoune commits onto the tag.
           fetch-depth: 0
-          # PAT with `repo` + `workflow` scopes: pushing the replayed build
-          # ref carries upstream's workflow files, which GITHUB_TOKEN may not.
+          # Fine-grained PAT with Contents and Workflows both read+write:
+          # pushing the replayed build ref carries upstream's workflow files,
+          # which GITHUB_TOKEN may not. Contents also covers the release and
+          # tag writes further down — there is no separate Releases
+          # permission on fine-grained PATs.
           token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Configure git identity
