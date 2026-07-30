@@ -44,6 +44,25 @@ branch, cherry-pick the change to the other.
   Pro/Max subscription, not an API key) to read the failed run, reproduce the
   failure, and open a fix PR — or re-run/comment when it's an infra flake.
 
+### `SYNC_TOKEN`
+
+All three workflows authenticate as `SYNC_TOKEN`, a fine-grained PAT on
+`sweenu/zed` with **no expiry**. It needs all six of these; a missing one
+fails late and confusingly, usually as a bare `403 Resource not accessible
+by personal access token`:
+
+| Permission | Level | Needed for |
+| --- | --- | --- |
+| Metadata | Read | mandatory on every fine-grained PAT |
+| Contents | Read+write | force-push `kakoune-mode`/`preview-build`, push `claude/sync-*`, and all release + tag writes |
+| Workflows | Read+write | every push carries upstream's `.github/workflows/*`; `GITHUB_TOKEN` cannot push those at all, which is the whole reason this PAT exists |
+| Issues | Read+write | open/comment the alert issues, and the autofix's outcome check |
+| Pull requests | Read+write | the autofix's fix PR |
+| Actions | Read+write | `gh run view --log-failed`, and `gh run rerun` to retry a flake |
+
+Contents covers releases and tags — fine-grained PATs have no separate
+Releases permission.
+
 ## Where the kakoune code lives
 
 - `crates/vim/src/kakoune.rs` — the bulk of the implementation
