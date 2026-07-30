@@ -404,3 +404,77 @@ jobs:
             echo "attic push failed; retrying in ${delay}s..." >&2
             sleep "$delay"
           done
+
+  # `build` alerts for its own failures, but build-macos and nix-cache had no
+  # alert at all: run 30534409671 lost nix-cache to a runner shutdown and filed
+  # nothing, so the only notice came from the autofix — and there would have
+  # been none whatsoever had CLAUDE_CODE_OAUTH_TOKEN been unset or expired.
+  #
+  # Both jobs run only after `build` has published the release, so a failure
+  # here never means "no release"; it means a published release is missing a
+  # piece. `build` failing skips both jobs, leaving their result `skipped`, so
+  # this never double-alerts alongside build's own issue.
+  alert-aux:
+    needs: [check, build-macos, nix-cache]
+    if: >-
+      always() && needs.check.outputs.should_build == 'true' &&
+      (needs.build-macos.result == 'failure' || needs.nix-cache.result == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or refresh the alert issue
+        uses: actions/github-script@v7
+        env:
+          UPSTREAM_TAG: ${{ needs.check.outputs.upstream_tag }}
+          RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
+          MACOS_RESULT: ${{ needs.build-macos.result }}
+          NIX_RESULT: ${{ needs.nix-cache.result }}
+        with:
+          script: |
+            const { UPSTREAM_TAG, RELEASE_TAG, MACOS_RESULT, NIX_RESULT } = process.env;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const releaseUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/releases/tag/${RELEASE_TAG}`;
+            const failed = [];
+            if (MACOS_RESULT === 'failure') failed.push('build-macos');
+            if (NIX_RESULT === 'failure') failed.push('nix-cache');
+
+            const consequences = [];
+            if (MACOS_RESULT === 'failure') {
+            consequences.push(`- \`build-macos\`: the release has **no macOS DMG**. Linux users are unaffected; macOS users have nothing to download for this tag.`);
+            }
+            if (NIX_RESULT === 'failure') {
+            consequences.push(`- \`nix-cache\`: the attic cache on najdorf was **not updated**. Nothing is broken for release downloads, but NixOS machines will compile this revision from source instead of substituting it.`);
+            }
+
+            const title = `Preview build: ${failed.join(' and ')} failed for ${UPSTREAM_TAG}`;
+            const body = [
+            `The \`${RELEASE_TAG}\` release itself published fine — \`build\` succeeded, so the Linux tarball, remote server, and release notes are all in place. These jobs run after it and failed on their own:`,
+            '',
+            ...consequences,
+            '',
+            '## What to do',
+            '',
+            'These jobs are frequently lost to runner flakes (host preemption shows up as `The runner has received a shutdown signal` / exit 143) rather than real breakage. Read the failing step first, then:',
+            '',
+            '- Flake → re-run just the failed jobs; they are both idempotent (`gh release upload --clobber` for the DMG, and attic skips already-uploaded paths).',
+            '- Real failure → reproduce from the released commit, which is the tip of `preview-build`.',
+            '',
+            `Run: ${runUrl}`,
+            `Release: ${releaseUrl}`,
+            ].join('\n');
+
+            const label = 'fork-release-build';
+            const existing = await github.rest.issues.listForRepo({
+            owner: context.repo.owner, repo: context.repo.repo,
+            state: 'open', labels: label,
+            });
+            if (existing.data.length > 0) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: existing.data[0].number, body: `### ${title}\n\n${body}`,
+            });
+            } else {
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title, body, labels: [label],
+            });
+            }
