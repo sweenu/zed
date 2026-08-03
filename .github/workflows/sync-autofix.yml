@@ -250,20 +250,34 @@ jobs:
                Keep that branch after applying: it is the record of what was
                pushed and the way back if the resolution turns out wrong.
 
-               If and only if the full gate passed, apply it yourself:
-               `git push --force-with-lease=kakoune-mode:${{ steps.before.outputs.kakoune_mode }} origin claude/sync-rebase-<run-id>:kakoune-mode`
-               Then comment on the alert issue listing every conflicted file
-               and how you resolved it, and close it. Do NOT open a PR and do
-               NOT mention anyone — this is the path meant to need nobody. A
-               replayed rebase passing the same gate the daily sync uses to
-               force-push is held to the same standard, so it lands the same
-               way.
+               Where that result belongs depends on which workflow failed,
+               and the two must never be mixed up. A sync rebase sits on
+               `upstream/main`; a release replay sits on a preview tag, which
+               is a point on upstream's RELEASE branch and not on main at
+               all. Pushing a replay onto `kakoune-mode` would move your work
+               branch off main and onto a release tag, silently corrupting
+               it.
 
-               Never use that lease SHA for a rebase you could not fully
-               verify. If the gate failed or could not finish, leave
-               `kakoune-mode` untouched, open a PR with base `kakoune-mode`
-               saying exactly what is unverified and why, note that it
-               rewrites history so it must be applied with
+               - Sync workflow, gate passed: apply it with
+                 `git push --force-with-lease=kakoune-mode:${{ steps.before.outputs.kakoune_mode }} origin claude/sync-rebase-<run-id>:kakoune-mode`
+                 Then comment on the alert issue listing every conflicted
+                 file and how you resolved it, and close it. Do NOT open a PR
+                 and do NOT mention anyone — this is the path meant to need
+                 nobody. A rebase passing the same gate the daily sync uses
+                 to force-push is held to the same standard, so it lands the
+                 same way.
+               - Release replay, gate passed: force-push the result to
+                 `preview-build` and never to `kakoune-mode`. That is only
+                 half the job: the failed run never reached `bundle-linux` or
+                 `gh release create`, so no release exists yet and you cannot
+                 build one here. Comment what you resolved and what remains,
+                 and follow step 6 — this case always needs a human.
+
+               Never use the kakoune-mode lease SHA for a rebase you could
+               not fully verify. If the gate failed or could not finish,
+               leave both branches untouched, open a PR with base
+               `kakoune-mode` saying exactly what is unverified and why, note
+               that it rewrites history so it must be applied with
                `git push --force-with-lease` rather than merged in GitHub,
                and follow step 6.
             6. Any outcome needing a human — a (b) fix, an unverified rebase,
