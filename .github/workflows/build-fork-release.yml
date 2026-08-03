@@ -33,6 +33,10 @@ on:
         description: "Build even if a release already exists for the latest preview tag"
         type: boolean
         default: false
+      use_existing_replay:
+        description: "Build from the current preview-build branch instead of replaying (use after the autofix resolved a replay conflict)"
+        type: boolean
+        default: false
 
 concurrency:
   group: build-fork-release
@@ -75,7 +79,10 @@ jobs:
           release_tag="kakoune-${upstream_tag}"
           echo "upstream_tag=$upstream_tag" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+          if [ "${{ github.event.inputs.force }}" = "true" ] ||
+             [ "${{ github.event.inputs.use_existing_replay }}" = "true" ]; then
+            # Dispatching either of these is an explicit "build now", so skip
+            # the dedup that would otherwise report nothing to do.
             echo "Forced build requested."
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           elif gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -121,6 +128,30 @@ jobs:
           git remote add upstream "$UPSTREAM"
           git fetch --no-tags upstream main
           git fetch --no-tags upstream "refs/tags/${UPSTREAM_TAG}:refs/tags/${UPSTREAM_TAG}"
+
+          # A replay conflict is inherent to the tag it happened on: preview
+          # lags main, so whenever main has code near the kakoune lines that
+          # the tag lacks, every re-run conflicts identically and the release
+          # can never be built. The autofix resolves those and pushes the
+          # result to preview-build, but cannot bundle or publish. This input
+          # is how that resolved state gets built.
+          if [ "${{ github.event.inputs.use_existing_replay }}" = "true" ]; then
+            git fetch --no-tags origin "$BUILD_BRANCH"
+            git checkout -B "$BUILD_BRANCH" "origin/${BUILD_BRANCH}"
+            # Guard against publishing the wrong thing: preview-build is only
+            # valid for the tag it was replayed onto, and if upstream has cut
+            # a newer preview since, the release would be labelled with that
+            # newer tag while containing the older code.
+            if ! git merge-base --is-ancestor "$UPSTREAM_TAG" HEAD; then
+              echo "::error::${BUILD_BRANCH} is not based on ${UPSTREAM_TAG}; it was replayed onto a different tag. Re-run without use_existing_replay so the replay happens against the current tag." >&2
+              echo "result=conflict" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            echo "Building from the existing ${BUILD_BRANCH} ($(git rev-parse --short HEAD))."
+            echo "result=ok" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # The fork point of the kakoune work on main: everything after it on
           # WORK_BRANCH is the kakoune commits, regardless of how far main moved.
           base=$(git merge-base upstream/main "$WORK_BRANCH")
