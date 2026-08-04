@@ -135,9 +135,20 @@ jobs:
       - name: Record pre-autofix state
         id: before
         if: steps.gate.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          FAILED_RUN: ${{ github.event.workflow_run.id }}
         run: |
           git ls-remote --heads origin 'claude/sync-*' | awk '{print $2}' | sort > "${RUNNER_TEMP}/claude-branches-before.txt"
           echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          # Requeuing a flake is a real outcome that leaves no branch and no
+          # comment, so it is invisible to the checks below and gets reported
+          # as a no-op. Re-running bumps the run's attempt count, which is the
+          # one durable trace it does leave. Empty on a manual dispatch, where
+          # there is no triggering run to compare against.
+          if [ -n "$FAILED_RUN" ]; then
+            echo "attempt=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${FAILED_RUN}" --jq '.run_attempt')" >> "$GITHUB_OUTPUT"
+          fi
           # Lease baseline for the auto-apply force-push. Pinning the SHA we
           # started from means a daily sync or a human pushing kakoune-mode
           # while Claude works makes the push fail instead of silently
@@ -288,11 +299,26 @@ jobs:
                notification design: the mention is the signal, so spending it
                on finished work trains it to be ignored.
 
+            This run is one-shot: when your turn ends the job exits and
+            nothing you deferred will ever happen. There is no later. Do not
+            wait on, watch, or poll work that outlives the turn — no
+            `gh run watch`, no background job you plan to check back on, no
+            scheduled wake-up. In particular, after requeuing a flake do NOT
+            wait to see whether the rerun passes; you cannot, and a rerun you
+            triggered but never wrote up reads from the outside as a run that
+            did nothing. Trigger it, write the comment in the same turn, and
+            finish. Run 30853827697 requeued a nix-cache flake correctly and
+            then scheduled a follow-up to report on it; the follow-up never
+            ran, so the fix went unrecorded and the owner was pinged for work
+            that was already in hand.
+
             The verification gate is slow: `cargo test -p vim` followed by
             `cargo build -p zed -p settings_ui` takes 10-20 minutes on this
             runner even with a warm cache. Run each with an explicit long
             Bash timeout (`timeout: 2700000`) and let it finish. Being slow
-            is expected and is not a reason to skip verification.
+            is expected and is not a reason to skip verification. That is the
+            one kind of waiting that belongs here, because it finishes inside
+            the turn.
 
             Never end a run without leaving a visible outcome. Every run has
             to finish with an applied rebase, or a pushed branch and a PR, or
@@ -321,6 +347,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
           SINCE: ${{ steps.before.outputs.at }}
+          FAILED_RUN: ${{ github.event.workflow_run.id }}
+          ATTEMPT_BEFORE: ${{ steps.before.outputs.attempt }}
         run: |
           git ls-remote --heads origin 'claude/sync-*' | awk '{print $2}' | sort > "${RUNNER_TEMP}/claude-branches-after.txt"
           new_branches=$(comm -13 "${RUNNER_TEMP}/claude-branches-before.txt" "${RUNNER_TEMP}/claude-branches-after.txt")
@@ -351,8 +379,22 @@ jobs:
             exit 0
           fi
 
+          # Requeuing a flake fixes the failure while leaving no branch and no
+          # issue behind, so the checks above cannot see it. Run 30853827697
+          # requeued a nix-cache flake — which worked, the release completed on
+          # the next attempt — and was still reported as a no-op. The rerun
+          # bumps the triggering run's attempt count; that is the trace.
+          if [ -n "$FAILED_RUN" ] && [ -n "$ATTEMPT_BEFORE" ]; then
+            attempt_after=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${FAILED_RUN}" --jq '.run_attempt')
+            if [ "$attempt_after" -gt "$ATTEMPT_BEFORE" ]; then
+              echo "Autofix requeued run ${FAILED_RUN} (attempt ${ATTEMPT_BEFORE} -> ${attempt_after})."
+              echo "::warning::The rerun was not written up on the alert issue, so it left no record beyond this line."
+              exit 0
+            fi
+          fi
+
           echo "no_outcome=true" >> "$GITHUB_OUTPUT"
-          echo "::error::Claude ended without pushing a fix branch or leaving an issue behind. The original failure is still unfixed; see the run log above for what it did."
+          echo "::error::Claude ended without pushing a fix branch, leaving an issue behind, or requeuing the failed run. The original failure is still unfixed; see the run log above for what it did."
           exit 1
 
       # Every other "needs a human" path is a comment Claude writes itself.
