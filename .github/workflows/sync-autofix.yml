@@ -278,11 +278,31 @@ jobs:
                  to force-push is held to the same standard, so it lands the
                  same way.
                - Release replay, gate passed: force-push the result to
-                 `preview-build` and never to `kakoune-mode`. That is only
-                 half the job: the failed run never reached `bundle-linux` or
-                 `gh release create`, so no release exists yet and you cannot
-                 build one here. Comment what you resolved and what remains,
-                 and follow step 6 — this case always needs a human.
+                 `preview-build` and never to `kakoune-mode`. That alone
+                 leaves no release: the failed run never reached
+                 `bundle-linux` or `gh release create`, and you cannot build
+                 one inside this job. Hand it back to the release workflow,
+                 which can build `preview-build` as it stands:
+                 `gh workflow run build-fork-release.yml --repo "$GITHUB_REPOSITORY" --ref main -f use_existing_replay=true`
+                 That input skips the replay entirely and bundles the branch
+                 you just pushed, so it will not re-hit the conflict. The
+                 workflow re-checks that the preview tag is an ancestor of
+                 `preview-build` and fails loudly if upstream cut a newer
+                 preview in the meantime, so you do not need to verify that
+                 yourself. Then comment what you resolved and that the
+                 rebuild is dispatched, and close the issue — no mention.
+
+                 One exception, and it matters: only dispatch when the failed
+                 run was a `schedule`. This run was triggered by a
+                 "${{ github.event.workflow_run.event }}" run. If that says
+                 `workflow_dispatch`, the failing run IS a rebuild like the
+                 one you would fire, and dispatching another would loop
+                 indefinitely — comment what you found and follow step 6
+                 instead. If it is blank you were started manually, so read
+                 the failed run's own event with
+                 `gh run view <run-id> --json event` and apply the same rule
+                 to that. When in doubt, do not dispatch: a missed rebuild
+                 costs one mention, a loop costs the whole CI budget.
 
                Never use the kakoune-mode lease SHA for a rebase you could
                not fully verify. If the gate failed or could not finish,
@@ -292,10 +312,11 @@ jobs:
                `git push --force-with-lease` rather than merged in GitHub,
                and follow step 6.
             6. Any outcome needing a human — a (b) fix, an unverified rebase,
-               a flake you could not requeue, or giving up — gets a comment on
-               the alert issue mentioning `@${{ github.repository_owner }}`,
-               and the issue stays open. Outcomes needing nobody get no
-               mention and a closed issue. That distinction is the whole
+               a flake you could not requeue, a rebuild that failed on its own
+               rebuild, or giving up — gets a comment on the alert issue
+               mentioning `@${{ github.repository_owner }}`, and the issue
+               stays open. Outcomes needing nobody get no mention and a
+               closed issue. That distinction is the whole
                notification design: the mention is the signal, so spending it
                on finished work trains it to be ignored.
 
