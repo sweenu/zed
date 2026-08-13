@@ -41,8 +41,23 @@ branch, cherry-pick the change to the other.
   open/refresh an issue labeled `fork-release-build`.
 - **`sync-autofix.yml`**: fires when either workflow above fails. Runs Claude
   Code (authenticated with the `CLAUDE_CODE_OAUTH_TOKEN` secret from a
-  Pro/Max subscription, not an API key) to read the failed run, reproduce the
-  failure, and open a fix PR — or re-run/comment when it's an infra flake.
+  Pro/Max subscription, not an API key) to read the failed run and resolve it.
+  Most failures now finish without you:
+  - sync rebase conflict → resolved, gated on `cargo test -p vim && cargo
+    build -p zed -p settings_ui`, force-pushed to `kakoune-mode`
+  - release replay conflict → resolved and pushed to `preview-build`, then it
+    dispatches `build-fork-release.yml` with `use_existing_replay=true` to
+    build that branch without replaying again
+  - infra flake → `gh run rerun --failed`
+  - upstream broke the kakoune code → PR against `kakoune-mode` for review
+  - anything unverified, stuck, or a rebuild that itself failed → left alone
+
+  **You are notified only when a human is genuinely needed**, via an
+  `@`-mention on the alert issue; everything it finishes cleanly closes the
+  issue silently. That only works if the repo's watch level is
+  "Participating and @mentions" — on "All Activity" you get every alert issue
+  regardless. Alert issues are always filed either way, so a skipped or dead
+  autofix never means silence.
 
 ### `SYNC_TOKEN`
 
