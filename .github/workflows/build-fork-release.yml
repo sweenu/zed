@@ -448,6 +448,57 @@ jobs:
   # here never means "no release"; it means a published release is missing a
   # piece. `build` failing skips both jobs, leaving their result `skipped`, so
   # this never double-alerts alongside build's own issue.
+  # Counterpart to alert-aux: nothing used to close an alert issue once the
+  # pipeline started working again, so a superseded failure sat open forever.
+  # #17 was filed for a v1.16.1-pre replay conflict, upstream then cut
+  # v1.17.0-pre which built cleanly, and the issue stayed open regardless.
+  #
+  # "Nothing to do" counts as healthy on purpose: this fork only ever tracks
+  # the newest preview, so an alert about an older tag is moot once a newer
+  # one has a release — that older tag is never going to be built.
+  resolve-alerts:
+    needs: [check, build, build-macos, nix-cache]
+    if: >-
+      always() && needs.check.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close alert issues this run has disproved
+        uses: actions/github-script@v7
+        env:
+          BUILT: ${{ needs.check.outputs.should_build }}
+          RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
+        with:
+          script: |
+            const { BUILT, RELEASE_TAG } = process.env;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const why = BUILT === 'true'
+              ? `\`${RELEASE_TAG}\` built and published successfully in ${runUrl}.`
+              : `\`${RELEASE_TAG}\` already exists, so the newest upstream preview is released and there is nothing left to build (${runUrl}).`;
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'fork-release-build',
+            });
+            for (const issue of open.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: [
+                  'Closing automatically: the release pipeline has since succeeded, so whatever this issue reported is no longer blocking it.',
+                  '',
+                  why,
+                  '',
+                  'This does not mean the original failure was fixed. A replay conflict most often stops mattering because upstream cut a newer preview and the older tag was superseded, never built. Reopen this if that older tag still matters to you.',
+                ].join('\n'),
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, state: 'closed', state_reason: 'completed',
+              });
+              console.log(`Closed #${issue.number}: ${issue.title}`);
+            }
+
   alert-aux:
     needs: [check, build-macos, nix-cache]
     if: >-

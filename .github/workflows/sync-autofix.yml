@@ -120,6 +120,11 @@ jobs:
 
       - name: Install system dependencies
         if: steps.gate.outputs.enabled == 'true'
+        # In run 32233282808 this hung and was still hanging when the job hit
+        # its 300-minute timeout, five hours later. Fail fast instead: apt
+        # normally finishes in under a minute, so anything past this is stuck,
+        # and a failed step reaches a verdict where a cancelled job does not.
+        timeout-minutes: 15
         run: ./script/linux
 
       - name: Cache Rust build
@@ -432,6 +437,40 @@ jobs:
               `@${context.repo.owner} the autofix ran but produced no outcome — nothing pushed, no issue touched. The original failure is unfixed and needs you.`,
               '',
               `Autofix run (the full transcript is in the job log): ${runUrl}`,
+            ].join('\n');
+            for (const label of ['upstream-sync', 'fork-release-build']) {
+              const open = await github.rest.issues.listForRepo({
+                owner: context.repo.owner, repo: context.repo.repo,
+                state: 'open', labels: label,
+              });
+              for (const issue of open.data) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: issue.number, body,
+                });
+              }
+            }
+
+      # The no_outcome ping above only fires when `verify` actually ran. If the
+      # job is cancelled or a setup step fails, `verify` is skipped, no_outcome
+      # is never set, and nobody is told anything — which is precisely what
+      # happened on 2026-08-19: dependency install hung, the job hit its
+      # timeout and was CANCELLED, and issue #17 sat open with no comment and
+      # no mention. A cancelled autofix is still an unfixed failure.
+      - name: Ping the owner when the autofix never reached a verdict
+        if: >-
+          always() && steps.gate.outputs.enabled == 'true' &&
+          steps.verify.outcome == 'skipped'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `@${context.repo.owner} the autofix did not finish — it was cancelled or died before it could reach a verdict, so it never even reported whether it fixed anything. The original failure is unfixed and needs you.`,
+              '',
+              'A job timeout looks like a cancellation rather than a failure, so this would otherwise be completely silent.',
+              '',
+              `Autofix run: ${runUrl}`,
             ].join('\n');
             for (const label of ['upstream-sync', 'fork-release-build']) {
               const open = await github.rest.issues.listForRepo({

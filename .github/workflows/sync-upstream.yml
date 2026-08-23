@@ -190,3 +190,36 @@ jobs:
           steps.rebase.outputs.result == 'conflict' ||
           (steps.rebase.outputs.result == 'rebased' && steps.test.outcome == 'failure')
         run: exit 1
+
+      # Nothing closed an alert issue when a later run simply started working
+      # again, so a failure that resolved itself — upstream reconverging, a
+      # flake that did not recur — left an open issue behind forever. This run
+      # succeeding is proof the branch is healthy now, whatever the issue says.
+      - name: Close alert issues this run has disproved
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'upstream-sync',
+            });
+            for (const issue of open.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: [
+                  `Closing automatically: the sync has since succeeded, so whatever this issue reported is no longer failing.`,
+                  '',
+                  `\`kakoune-mode\` rebased onto \`upstream/main\` and passed the test gate in ${runUrl}.`,
+                  '',
+                  'Nothing here was necessarily *fixed* — a conflict can stop recurring because upstream moved on. If the underlying problem matters beyond the branch being green, reopen this.',
+                ].join('\n'),
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, state: 'closed', state_reason: 'completed',
+              });
+              console.log(`Closed #${issue.number}: ${issue.title}`);
+            }
