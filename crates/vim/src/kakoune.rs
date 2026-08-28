@@ -1284,7 +1284,7 @@ impl Vim {
                     ) else {
                         return;
                     };
-                    let target = movement::line_beginning(map, point, false);
+                    let target = movement::line_beginning(map, point);
                     if extend {
                         selection.set_head(target, SelectionGoal::None);
                         if !selection.reversed {
@@ -1831,7 +1831,7 @@ impl Vim {
                     let mut leading_newline = false;
                     let display_point = if linewise {
                         if before {
-                            movement::line_beginning(&display_map, selection.start, false)
+                            movement::line_beginning(&display_map, selection.start)
                         } else if selection.start == selection.end {
                             let line_end =
                                 movement::line_end(&display_map, selection.end, false);
