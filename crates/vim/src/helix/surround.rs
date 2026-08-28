@@ -517,7 +517,7 @@ mod test {
         cx.set_state("hello «worlˇ»d", Mode::KakouneNormal);
         cx.dispatch_action(crate::PushHelixSurroundAdd);
         cx.simulate_keystrokes("[");
-        cx.assert_state("hello [worlˇ]d", Mode::KakouneNormal);
+        cx.assert_state("hello «[worl]ˇ»d", Mode::KakouneNormal);
 
         // Delete removes the nearest surrounding pair around the cursor.
         cx.set_state("hello (woˇrld) test", Mode::KakouneNormal);
