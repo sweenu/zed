@@ -192,16 +192,22 @@ jobs:
         # official Zed and is never touched by Zed's auto-updater.
         run: echo dev > crates/zed/RELEASE_CHANNEL
 
+      # No REMOTE_SERVER_TARGET here on purpose: bundle-linux defaults to the
+      # musl target, which links remote_server statically so it runs on any
+      # glibc. This used to be overridden to x86_64-unknown-linux-gnu because
+      # the musl link failed on ubuntu-latest with unsatisfiable `__isoc23_*`
+      # symbols, but that produced a remote server requiring glibc 2.39 —
+      # newer than most VPSes, and broken for the people it was published for
+      # (zed-industries/zed#36870). The musl link now succeeds on 24.04, which
+      # was verified by building it there and confirming the result is
+      # static-pie with no GLIBC symbols at all. If it regresses, fix the musl
+      # build rather than restoring the override: an older runner is not an
+      # option, since ubuntu-22.04 began deprecation on 2026-09-17 and
+      # ubuntu-20.04 is already gone.
       - name: Bundle Linux release
         env:
           CC: clang
           CXX: clang++
-          # Build remote_server against glibc instead of the default musl
-          # target. ubuntu-latest (24.04) ships glibc 2.39, whose
-          # `__isoc23_*` symbols aren't satisfiable when statically linking
-          # the musl remote_server, so the musl link fails. A glibc
-          # remote_server is fine for a personal build.
-          REMOTE_SERVER_TARGET: x86_64-unknown-linux-gnu
         run: ./script/bundle-linux
 
       - name: Publish fork release
@@ -223,6 +229,11 @@ jobs:
 
           **Linux:** download \`zed-linux-${arch}.tar.gz\`, extract it, and run the
           \`zed\` binary inside.
+
+          **Remote development:** works out of the box against x86_64 Linux
+          hosts — the editor fetches \`zed-remote-server-linux-x86_64.gz\` from
+          this release automatically. The server binary is statically linked,
+          so the host's glibc version does not matter.
 
           **macOS (Apple Silicon):** download \`Zed-aarch64.dmg\` and drag Zed to
           Applications. The build is unsigned, so clear the quarantine flag once:
