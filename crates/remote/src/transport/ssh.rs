@@ -893,6 +893,32 @@ impl SshRemoteConnection {
             return Ok(dst_path.into());
         }
 
+        // Fork-only. Upstream refuses to provision a remote server on the dev
+        // channel, because a dev build normally means a working tree where
+        // ZED_BUILD_REMOTE_SERVER can build one. This fork ships as `dev` so it
+        // installs alongside an official Zed and is ignored by Zed's updater,
+        // which would otherwise leave remote development permanently broken for
+        // its users. It publishes a matching remote server on its own releases,
+        // so fetch that rather than bailing.
+        if release_channel == ReleaseChannel::Dev {
+            let url = Self::kakoune_fork_remote_server_url(self.ssh_platform, &version)?;
+            let tmp_path_compressed = remote_server_dir_relative().join(
+                &RelPath::from_unix_str(&format!(
+                    "{}-download-{}.gz",
+                    binary_name,
+                    std::process::id()
+                ))
+                .context("building remote server download path")?,
+            );
+            self.download_binary_on_server(&url, &tmp_path_compressed, delegate, cx)
+                .await
+                .context("downloading the fork's remote server onto the host")?;
+            self.extract_server_binary(&dst_path, &tmp_path_compressed, delegate, cx)
+                .await
+                .context("extracting the fork's remote server")?;
+            return Ok(dst_path.into());
+        }
+
         let wanted_version = cx.update(|cx| match release_channel {
             ReleaseChannel::Nightly => Ok(None),
             ReleaseChannel::Dev => {
@@ -961,6 +987,32 @@ impl SshRemoteConnection {
             .await
             .context("extracting server binary")?;
         Ok(dst_path.into())
+    }
+
+    /// Fork-only: the release asset URL for this fork's own remote server.
+    ///
+    /// Release tags are `kakoune-v<upstream version>-pre`, and the crate
+    /// version at an upstream `vX.Y.Z-pre` tag is exactly `X.Y.Z`, so the tag
+    /// is derivable from the running app's version. Built from the version
+    /// fields rather than `Display` so trailing prerelease or build metadata
+    /// can never leak into the URL.
+    fn kakoune_fork_remote_server_url(platform: RemotePlatform, version: &Version) -> Result<String> {
+        anyhow::ensure!(
+            platform.os == RemoteOs::Linux && platform.arch == RemoteArch::X86_64,
+            "this fork only publishes a linux-x86_64 remote server, but the host is {}-{}. \
+             Build one from source on the host, or place it at ~/.zed_server/{}.",
+            platform.os.as_str(),
+            platform.arch.as_str(),
+            "zed-remote-server-dev-build",
+        );
+        Ok(format!(
+            "https://github.com/sweenu/zed/releases/download/kakoune-v{}.{}.{}-pre/zed-remote-server-{}-{}.gz",
+            version.major,
+            version.minor,
+            version.patch,
+            platform.os.as_str(),
+            platform.arch.as_str(),
+        ))
     }
 
     async fn download_binary_on_server(
