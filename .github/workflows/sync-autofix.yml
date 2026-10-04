@@ -356,6 +356,20 @@ jobs:
             unverified and why. A silent run is the one outcome that is
             never acceptable: the branch stays broken and nobody is told.
 
+            Upstream's `.rules` (loaded as CLAUDE.md) is written for people
+            preparing pull requests to zed-industries/zed. Follow its coding
+            guidance, but not its rules about how to submit PRs — this job is
+            not submitting anything to Zed, it maintains a fork whose work
+            branch ships straight into releases. In particular, never add the
+            `> [!IMPORTANT]` / "Remove this line to confirm you've reviewed this
+            PR" notice to README.md, whatever `.rules` says about doing it
+            before modifying source. That notice exists to force a human
+            review step; here it would instead be replayed onto every rebase
+            and published in every release, and the rule forbids the only
+            actor that could notice it from ever removing it. A previous run
+            followed it and had to be reverted. No commit you make should touch
+            README.md at all.
+
             PR hygiene: imperative title with no conventional-commit prefix
             and no trailing punctuation, and end the PR body with:
 
@@ -483,4 +497,71 @@ jobs:
                   issue_number: issue.number, body,
                 });
               }
+            }
+
+      # The prompt says not to, but this is instruction against instruction:
+      # upstream's .rules calls the README review notice a HARD RULE with "no
+      # exceptions", and the run of 2026-10-02 obeyed it, putting the notice at
+      # the tip of kakoune-mode where every later sync replayed it toward the
+      # next release. Upstream controls that file and can reword it at any
+      # time, so check the outcome rather than the wording: no fork commit has
+      # any business touching README.md.
+      - name: Check no fork commit touches README.md
+        id: readme
+        if: always() && steps.gate.outputs.enabled == 'true'
+        run: |
+          git fetch --no-tags -q origin kakoune-mode
+          git fetch --no-tags -q upstream main
+          base=$(git merge-base upstream/main origin/kakoune-mode)
+          offenders=$(git log --format='%h %s' "$base..origin/kakoune-mode" -- README.md)
+          if [ -n "$offenders" ]; then
+            {
+              echo 'offenders<<EOF'
+              echo "$offenders"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+            echo "::error::kakoune-mode carries commits that modify README.md: $offenders"
+            exit 1
+          fi
+
+      - name: Ping the owner when a fork commit touches README.md
+        if: always() && steps.readme.outcome == 'failure'
+        uses: actions/github-script@v7
+        env:
+          OFFENDERS: ${{ steps.readme.outputs.offenders }}
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `@${context.repo.owner} \`kakoune-mode\` now carries a commit that modifies README.md, which no fork commit should:`,
+              '',
+              '```',
+              process.env.OFFENDERS,
+              '```',
+              '',
+              "Most likely the autofix followed upstream's `.rules` instruction to stamp a review notice on README.md. It will be replayed onto every sync and published with the next release until it is dropped from the branch (`git rebase -i` on `kakoune-mode`, then `git push --force-with-lease`).",
+              '',
+              `Autofix run: ${runUrl}`,
+            ].join('\n');
+            // Deliberately its own label. resolve-alerts and the sync workflow
+            // close every open upstream-sync / fork-release-build issue on their
+            // next green run, and a green sync is no evidence here: it replays
+            // the README commit along with everything else. This must stay open
+            // until someone actually drops the commit.
+            const label = 'fork-integrity';
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: label,
+            });
+            if (open.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: open.data[0].number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: 'kakoune-mode carries a commit touching README.md',
+                body, labels: [label],
+              });
             }
