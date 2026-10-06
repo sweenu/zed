@@ -1,0 +1,39 @@
+# Throwaway: validates a native aarch64 musl remote_server build. Delete after.
+name: Test ARM remote server
+on:
+  push:
+    branches: [claude/test-arm-remote-server]
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - run: echo dev > crates/zed/RELEASE_CHANNEL
+      - run: ./script/linux
+      - name: Build remote server (aarch64, static musl)
+        env:
+          ZED_BUNDLE: "true"
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: |
+          set -euxo pipefail
+          triple=aarch64-unknown-linux-musl
+          export RELEASE_VERSION="$(script/get-crate-version zed)"
+          rustup target add "$triple"
+          cargo --config .cargo/bundle-config.toml build --release --target "$triple" --package remote_server
+          bin="target/$triple/release/remote_server"
+          llvm-objcopy --strip-debug --discard-all "$bin"
+          file "$bin"
+          readelf -d "$bin" || true
+          readelf -lW "$bin" | grep -i interp || echo "no interpreter"
+          strings "$bin" | grep -c GLIBC_ || true
+          "$bin" version || "$bin" --version || true
+          gzip -f --stdout --best "$bin" > target/zed-remote-server-linux-aarch64.gz
+          ls -l "$bin" target/zed-remote-server-linux-aarch64.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remote-server-aarch64
+          path: target/zed-remote-server-linux-aarch64.gz
+          retention-days: 3
