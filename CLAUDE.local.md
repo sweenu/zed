@@ -37,7 +37,9 @@ branch, cherry-pick the change to the other.
   preview tag (`vX.Y.Z-pre`), replays the kakoune commits onto that tag,
   builds Linux + macOS bundles as the `dev` release channel (so they coexist
   with an official Zed install), publishes a `kakoune-vX.Y.Z-pre` release on
-  the fork, and pushes a nix build to a self-hosted attic cache. Failures
+  the fork with static x86_64 and aarch64 Linux remote servers (the dev
+  channel fetches these itself; see `crates/remote/src/transport/ssh.rs`),
+  and pushes a nix build to a self-hosted attic cache. Failures
   open/refresh an issue labeled `fork-release-build`.
 - **`sync-autofix.yml`**: fires when either workflow above fails. Runs Claude
   Code (authenticated with the `CLAUDE_CODE_OAUTH_TOKEN` secret from a
