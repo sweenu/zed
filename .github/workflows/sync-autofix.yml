@@ -229,9 +229,9 @@ jobs:
                b. Clean rebase but the tests or build failed — upstream
                   changed an API the kakoune code uses.
                c. Infrastructure flake — runner disk, network, tailscale,
-                  cache, timeout. The macos and nix-cache jobs of the release
-                  workflow cannot be reproduced on this runner, so for those
-                  judge from the logs alone.
+                  cache, timeout. The macos, ARM remote server, and nix-cache
+                  jobs of the release workflow cannot be reproduced on this
+                  runner, so for those judge from the logs alone.
             3. For (c): do NOT open a PR. Retry with
                `gh run rerun <run-id> --failed`. That should work; if it
                403s the PAT has lost its Actions write permission, so retry
@@ -241,8 +241,9 @@ jobs:
                Then explain the flake on the alert issue (label
                `upstream-sync` for the sync workflow, `fork-release-build`
                for the release one). Often there is no such issue open: only
-               the release workflow's `build` job files one, so `build-macos`
-               and `nix-cache` failures arrive with nothing to comment on.
+               the release workflow's `build` job files one, so
+               `build-macos`, `build-remote-server-arm` and `nix-cache`
+               failures arrive with nothing to comment on.
                Open one yourself in that case, with the right label — a new
                issue and a comment count equally as the outcome for step 6.
                If the rerun succeeded, close the issue and do not mention

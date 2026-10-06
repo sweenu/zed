@@ -230,10 +230,12 @@ jobs:
           **Linux:** download \`zed-linux-${arch}.tar.gz\`, extract it, and run the
           \`zed\` binary inside.
 
-          **Remote development:** works out of the box against x86_64 Linux
-          hosts — the editor fetches \`zed-remote-server-linux-x86_64.gz\` from
-          this release automatically. The server binary is statically linked,
-          so the host's glibc version does not matter.
+          **Remote development:** works out of the box against x86_64 and
+          aarch64 Linux hosts — the editor fetches the matching
+          \`zed-remote-server-linux-<arch>.gz\` from this release automatically.
+          The server binaries are statically linked, so the host's glibc
+          version does not matter. The aarch64 one is attached by a separate
+          job shortly after this release first appears.
 
           **macOS (Apple Silicon):** download \`Zed-aarch64.dmg\` and drag Zed to
           Applications. The build is unsigned, so clear the quarantine flag once:
@@ -371,6 +373,70 @@ jobs:
             "target/aarch64-apple-darwin/release/Zed-aarch64.dmg" \
             --repo "$GITHUB_REPOSITORY" --clobber
 
+  # Build the aarch64 Linux remote server and attach it to the release, so
+  # remote development also works against ARM hosts.
+  # The editor's dev channel downloads
+  # `zed-remote-server-linux-<arch>.gz` from this release for whatever arch
+  # the host reports, and the `build` job only produces the runner's own
+  # arch. This builds natively on GitHub's ARM runner (free for public
+  # repos), as upstream does, rather than cross-compiling, and mirrors the
+  # remote-server steps of script/bundle-linux, which can't be reused here
+  # because it insists on building the whole editor first.
+  build-remote-server-arm:
+    needs: [check, build]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
+      TRIPLE: aarch64-unknown-linux-musl
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.check.outputs.release_tag }}
+          fetch-depth: 1
+
+      - name: Force a coexisting channel
+        run: echo dev > crates/zed/RELEASE_CHANNEL
+
+      - name: Install system dependencies
+        run: ./script/linux
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: remote-server-linux-aarch64
+          cache-on-failure: true
+
+      - name: Build the remote server (static musl)
+        env:
+          ZED_BUNDLE: "true"
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: |
+          set -euo pipefail
+          export RELEASE_VERSION="$(script/get-crate-version zed)"
+          rustup target add "$TRIPLE"
+          cargo --config .cargo/bundle-config.toml build --release \
+            --target "$TRIPLE" --package remote_server
+          bin="target/${TRIPLE}/release/remote_server"
+          llvm-objcopy --strip-debug --discard-all "$bin"
+          # The point of musl is a binary that runs on any distro; fail
+          # rather than publish one that quietly needs a dynamic loader.
+          if readelf -lW "$bin" | grep -q 'Requesting program interpreter'; then
+            echo "::error::remote_server is dynamically linked" >&2
+            exit 1
+          fi
+          gzip -f --stdout --best "$bin" > target/zed-remote-server-linux-aarch64.gz
+
+      - name: Attach the remote server to the release
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            target/zed-remote-server-linux-aarch64.gz \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
   # Build the flake's nix package from the exact commit the release tag points
   # at (preview + kakoune) and push it to the self-hosted attic cache on
   # najdorf over Tailscale, so the NixOS machines substitute it instead of
@@ -455,10 +521,11 @@ jobs:
   # nothing, so the only notice came from the autofix — and there would have
   # been none whatsoever had CLAUDE_CODE_OAUTH_TOKEN been unset or expired.
   #
-  # Both jobs run only after `build` has published the release, so a failure
-  # here never means "no release"; it means a published release is missing a
-  # piece. `build` failing skips both jobs, leaving their result `skipped`, so
-  # this never double-alerts alongside build's own issue.
+  # build-remote-server-arm, added later, is in the same position. All three
+  # run only after `build` has published the release, so a failure here never
+  # means "no release"; it means a published release is missing a piece.
+  # `build` failing skips them, leaving their result `skipped`, so this never
+  # double-alerts alongside build's own issue.
   # Counterpart to alert-aux: nothing used to close an alert issue once the
   # pipeline started working again, so a superseded failure sat open forever.
   # #17 was filed for a v1.16.1-pre replay conflict, upstream then cut
@@ -468,7 +535,7 @@ jobs:
   # the newest preview, so an alert about an older tag is moot once a newer
   # one has a release — that older tag is never going to be built.
   resolve-alerts:
-    needs: [check, build, build-macos, nix-cache]
+    needs: [check, build, build-macos, build-remote-server-arm, nix-cache]
     if: >-
       always() && needs.check.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
@@ -511,10 +578,12 @@ jobs:
             }
 
   alert-aux:
-    needs: [check, build-macos, nix-cache]
+    needs: [check, build-macos, build-remote-server-arm, nix-cache]
     if: >-
       always() && needs.check.outputs.should_build == 'true' &&
-      (needs.build-macos.result == 'failure' || needs.nix-cache.result == 'failure')
+      (needs.build-macos.result == 'failure' ||
+       needs.build-remote-server-arm.result == 'failure' ||
+       needs.nix-cache.result == 'failure')
     runs-on: ubuntu-latest
     steps:
       - name: Open or refresh the alert issue
@@ -523,27 +592,32 @@ jobs:
           UPSTREAM_TAG: ${{ needs.check.outputs.upstream_tag }}
           RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
           MACOS_RESULT: ${{ needs.build-macos.result }}
+          ARM_RESULT: ${{ needs.build-remote-server-arm.result }}
           NIX_RESULT: ${{ needs.nix-cache.result }}
         with:
           script: |
-            const { UPSTREAM_TAG, RELEASE_TAG, MACOS_RESULT, NIX_RESULT } = process.env;
+            const { UPSTREAM_TAG, RELEASE_TAG, MACOS_RESULT, ARM_RESULT, NIX_RESULT } = process.env;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const releaseUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/releases/tag/${RELEASE_TAG}`;
             const failed = [];
             if (MACOS_RESULT === 'failure') failed.push('build-macos');
+            if (ARM_RESULT === 'failure') failed.push('build-remote-server-arm');
             if (NIX_RESULT === 'failure') failed.push('nix-cache');
 
             const consequences = [];
             if (MACOS_RESULT === 'failure') {
             consequences.push(`- \`build-macos\`: the release has **no macOS DMG**. Linux users are unaffected; macOS users have nothing to download for this tag.`);
             }
+            if (ARM_RESULT === 'failure') {
+            consequences.push(`- \`build-remote-server-arm\`: the release has **no aarch64 remote server**, so remote development against ARM Linux hosts fails for this tag. x86_64 hosts are unaffected.`);
+            }
             if (NIX_RESULT === 'failure') {
             consequences.push(`- \`nix-cache\`: the attic cache on najdorf was **not updated**. Nothing is broken for release downloads, but NixOS machines will compile this revision from source instead of substituting it.`);
             }
 
-            const title = `Preview build: ${failed.join(' and ')} failed for ${UPSTREAM_TAG}`;
+            const title = `Preview build: ${failed.join(', ')} failed for ${UPSTREAM_TAG}`;
             const body = [
-            `The \`${RELEASE_TAG}\` release itself published fine — \`build\` succeeded, so the Linux tarball, remote server, and release notes are all in place. These jobs run after it and failed on their own:`,
+            `The \`${RELEASE_TAG}\` release itself published fine — \`build\` succeeded, so the Linux tarball, x86_64 remote server, and release notes are all in place. These jobs run after it and failed on their own:`,
             '',
             ...consequences,
             '',
@@ -551,7 +625,7 @@ jobs:
             '',
             'These jobs are frequently lost to runner flakes (host preemption shows up as `The runner has received a shutdown signal` / exit 143) rather than real breakage. Read the failing step first, then:',
             '',
-            '- Flake → re-run just the failed jobs; they are both idempotent (`gh release upload --clobber` for the DMG, and attic skips already-uploaded paths).',
+            '- Flake → re-run just the failed jobs; they are all idempotent (`gh release upload --clobber` for the DMG and the ARM remote server, and attic skips already-uploaded paths).',
             '- Real failure → reproduce from the released commit, which is the tip of `preview-build`.',
             '',
             `Run: ${runUrl}`,
