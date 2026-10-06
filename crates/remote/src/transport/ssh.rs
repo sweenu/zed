@@ -998,8 +998,8 @@ impl SshRemoteConnection {
     /// can never leak into the URL.
     fn kakoune_fork_remote_server_url(platform: RemotePlatform, version: &Version) -> Result<String> {
         anyhow::ensure!(
-            platform.os == RemoteOs::Linux && platform.arch == RemoteArch::X86_64,
-            "this fork only publishes a linux-x86_64 remote server, but the host is {}-{}. \
+            platform.os == RemoteOs::Linux,
+            "this fork only publishes Linux remote servers (x86_64 and aarch64), but the host is {}-{}. \
              Build one from source on the host, or place it at ~/.zed_server/{}.",
             platform.os.as_str(),
             platform.arch.as_str(),
