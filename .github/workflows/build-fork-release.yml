@@ -328,11 +328,12 @@ jobs:
   build-macos:
     needs: [check, build]
     if: needs.check.outputs.should_build == 'true'
-    # macos-15 (standard, free on public repos) defaults to Xcode 16.x, whose
-    # Apple libc++ satisfies the C++20 contiguous_iterator concept that the
-    # pinned cxx in webrtc-sys requires. The older macos-14 Xcode 15.x libc++
-    # fails it (static_assert(contiguous_range<rust::Slice<...>>) in cxx.h).
-    runs-on: macos-15
+    # script/bundle-mac requires the macOS 26 SDK (Xcode 26), which macos-15
+    # no longer defaults to. Xcode 26's Apple libc++ also satisfies the C++20
+    # contiguous_iterator concept that the pinned cxx in webrtc-sys requires;
+    # the older macos-14 Xcode 15.x libc++ fails it
+    # (static_assert(contiguous_range<rust::Slice<...>>) in cxx.h).
+    runs-on: macos-26
     # Cold builds on the free 3-core runner are slow; give them the full
     # GitHub-hosted ceiling (6h hard cap) so the first cold build can finish
     # and its post-step saves the rust-cache for fast subsequent runs.
