@@ -420,12 +420,12 @@ jobs:
           rustup target add "$TRIPLE"
           cargo --config .cargo/bundle-config.toml build --release \
             --target "$TRIPLE" --package remote_server
-          bin="target/${TRIPLE}/release/remote_server"
+          bin="target/${TRIPLE}/release/remote-server"
           llvm-objcopy --strip-debug --discard-all "$bin"
           # The point of musl is a binary that runs on any distro; fail
           # rather than publish one that quietly needs a dynamic loader.
           if readelf -lW "$bin" | grep -q 'Requesting program interpreter'; then
-            echo "::error::remote_server is dynamically linked" >&2
+            echo "::error::remote-server is dynamically linked" >&2
             exit 1
           fi
           gzip -f --stdout --best "$bin" > target/zed-remote-server-linux-aarch64.gz
